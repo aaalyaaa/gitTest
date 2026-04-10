@@ -1,0 +1,77 @@
+ПОКА НЕ РАБОАТЕТ НОРМАЛЬНО
+
+#' Скрипт для запуска ML анализа
+
+# Установка пакетов (если нужно)
+packages <- c("cluster", "randomForest", "caret", "forecast")
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+# Загрузка функций
+source("R/profile_developers.R")
+source("R/ml_analysis.R")
+
+# Подключение к БД
+con <- DBI::dbConnect(duckdb::duckdb(), "git_data.duckdb")
+
+cat("\n🤖 ML АНАЛИЗ РАЗРАБОТЧИКОВ\n")
+cat("==========================\n\n")
+
+# 1. Кластеризация разработчиков 
+cat("📌 1. КЛАСТЕРИЗАЦИЯ РАЗРАБОТЧИКОВ\n") 
+#clusters <- cluster_developers(con, n_clusters = 3)
+
+#if (!is.null(clusters$cluster_stats)) {
+#  print(clusters$cluster_stats)
+#  cat("\nРаспределение по кластерам:\n")
+#  print(table(clusters$data$cluster_type))
+  
+#  # Детали по кластерам
+#  cat("\nХарактеристики кластеров:\n")
+#  print(clusters$cluster_profiles[, c("cluster_type", "total_commits", "avg_commit_hour")])
+#}
+
+# 2. Обнаружение аномалий ML
+cat("\n\n📌 2. ОБНАРУЖЕНИЕ АНОМАЛИЙ (ML)\n")
+anomalies_ml <- detect_anomalies_ml(con)
+
+if (!is.null(anomalies_ml$anomalies)) {
+  cat(sprintf("Найдено аномальных разработчиков: %d из %d\n", 
+              nrow(anomalies_ml$anomalies), 
+              nrow(anomalies_ml$all_data)))
+  
+  cat("\nТоп аномальных разработчиков:\n")
+  print(anomalies_ml$anomalies[, c("author_name", "author_email", "anomaly_score", "anomaly_severity")])
+}
+
+# 3. Классификация типов коммитов
+cat("\n\n📌 3. КЛАССИФИКАЦИЯ ТИПОВ КОММИТОВ\n")
+classification <- classify_commit_types(con)
+
+if (!is.null(classification$accuracy)) {
+  cat(sprintf("Точность классификации: %.2f%%\n", classification$accuracy * 100))
+  cat("\nВажность признаков:\n")
+  print(classification$feature_importance)
+}
+
+# 4. Прогноз для конкретного разработчика
+cat("\n\n📌 4. ПРОГНОЗ АКТИВНОСТИ\n")
+forecast <- forecast_activity(con, email = "nastya5908@yandex.com")
+
+if (is.null(forecast$error)) {
+  cat(sprintf("Прогноз коммитов на следующую неделю: %d\n", forecast$next_week_commits))
+  
+  # Визуализация прогноза
+  plot(forecast$forecast, 
+       main = "Прогноз активности разработчика",
+       xlab = "Дни", ylab = "Количество коммитов")
+}
+
+# 5. Полный ML отчет
+#cat("\n\n📌 5. ПОЛНЫЙ ML ОТЧЕТ\n")
+#ml_report <- get_ml_report(con, email = "nastya5908@yandex.com")
+
+# Закрытие соединения
+DBI::dbDisconnect(con, shutdown = TRUE)
+
+cat("\n✅ ML анализ завершен!\n")

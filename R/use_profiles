@@ -1,0 +1,197 @@
+# 1. Загрузить функции
+source("R/profile_developers.R")
+
+# 2. Подключиться к БД
+con <- DBI::dbConnect(duckdb::duckdb(), "git_data.duckdb")
+
+# 3. Поиск разработчика
+developers <- search_developers(con, "jeff")
+print(developers)
+
+# 4. Полный профиль по email
+profile <- get_developer_profile_by_email(con, email = "jeff@joedog.org")
+print(profile)
+
+# 5. Просмотр различных аспектов профиля
+print(profile$basic_stats)          # базовая статистика
+print(profile$hourly_distribution)   # распределение по часам
+print(profile$weekday_patterns)      # активность по дням
+print(profile$commit_size)           # размер коммитов
+print(profile$languages)             # предпочитаемые языки
+print(profile$stability)             # стабильность кода
+print(profile$sensitive_files)       # чувствительные файлы
+
+# 6. Экспорт профиля в CSV
+export_profile_to_csv(profile, "my_profiles")
+
+# 7. Получить сводную статистику по всем
+summary <- get_summary_stats(con)
+print(summary$overview)
+print(summary$top_5_developers)
+
+# 8. Анализ аномалий
+anomalies <- get_anomaly_detection(con)
+print(anomalies)
+
+# Закрыть соединение
+DBI::dbDisconnect(con, shutdown = TRUE)
+
+
+ПРИМЕР ВЫВОДА
+
+  author_name          author_email commits
+1  Nastya3210 nastya5908@yandex.com       9
+
+
+> print(profile$basic_stats)          # базовая статистика
+  author_name          author_email total_commits repos_count              first_commit
+1  Nastya3210 nastya5908@yandex.com             9           1 2025-12-21 03:44:39 +0300
+                last_commit active_days
+1 2025-12-21 13:31:31 +0300           1
+> print(profile$hourly_distribution)   # распределение по часам
+  author_name          author_email hour commits percentage
+1  Nastya3210 nastya5908@yandex.com    3       4      44.44
+2  Nastya3210 nastya5908@yandex.com    4       3      33.33
+3  Nastya3210 nastya5908@yandex.com   13       2      22.22
+> print(profile$weekday_patterns)      # активность по дням
+  author_name          author_email     weekday commits percentage
+1  Nastya3210 nastya5908@yandex.com Воскресенье       9        100
+> print(profile$commit_size)           # размер коммитов
+  author_name          author_email commit_size_category commits_count percentage
+1  Nastya3210 nastya5908@yandex.com     средний (51-200)             3      33.33
+2  Nastya3210 nastya5908@yandex.com    маленький (11-50)             3      33.33
+3  Nastya3210 nastya5908@yandex.com очень большой (500+)             2      22.22
+4  Nastya3210 nastya5908@yandex.com    большой (201-500)             1      11.11
+> print(profile$languages)             # предпочитаемые языки
+  author_name          author_email file_extension changes lines_added lines_deleted files_affected
+1  Nastya3210 nastya5908@yandex.com              R      83        1388            89              4
+2  Nastya3210 nastya5908@yandex.com            qmd      42         296            40              4
+3  Nastya3210 nastya5908@yandex.com             Rd      10         120             4              1
+4  Nastya3210 nastya5908@yandex.com            css       8         264             0              2
+5  Nastya3210 nastya5908@yandex.com             md       4         112             0              2
+6  Nastya3210 nastya5908@yandex.com            yml       4         266             0              1
+  percentage
+1      54.97
+2      27.81
+3       6.62
+4       5.30
+5       2.65
+6       2.65
+> print(profile$stability)             # стабильность кода
+  author_name          author_email total_commits total_added total_deleted add_del_ratio rewrite_percentage
+1  Nastya3210 nastya5908@yandex.com             9        2510           133         18.87                5.3
+> print(profile$sensitive_files)       # чувствительные файлы
+[1] author_name   author_email  date          src_file      dst_file      is_sensitive  total_changes
+[8] code         
+<0 строк> (или 'row.names' нулевой длины)
+> 
+
+> # 7. Получить сводную статистику по всем
+> summary <- get_summary_stats(con)
+> print(summary$overview)
+  total_developers total_commits         first_commit_date          last_commit_date total_active_days
+1                3            18 2025-12-20 23:02:58 +0300 2025-12-21 16:37:10 +0300                 2
+  total_repos
+1           1
+> print(summary$top_5_developers)
+     author_name                  author_email commits
+1     Nastya3210         nastya5908@yandex.com       9
+2       aaalyaaa         gribanovaalya@mail.ru       6
+3 Tanya Maximova tanya.maksimova.2004@inbox.ru       3
+> 
+> # 8. Анализ аномалий
+> anomalies <- get_anomaly_detection(con)
+> print(anomalies)
+      author_name                  author_email                      date hour anomaly_type
+1      Nastya3210         nastya5908@yandex.com 2025-12-21 04:27:51 +0300    4 night_commit
+2      Nastya3210         nastya5908@yandex.com 2025-12-21 04:14:34 +0300    4 night_commit
+3      Nastya3210         nastya5908@yandex.com 2025-12-21 04:14:04 +0300    4 night_commit
+4      Nastya3210         nastya5908@yandex.com 2025-12-21 03:46:57 +0300    3 night_commit
+5      Nastya3210         nastya5908@yandex.com 2025-12-21 03:45:59 +0300    3 night_commit
+6      Nastya3210         nastya5908@yandex.com 2025-12-21 03:45:21 +0300    3 night_commit
+7      Nastya3210         nastya5908@yandex.com 2025-12-21 03:44:39 +0300    3 night_commit
+8  Tanya Maximova tanya.maksimova.2004@inbox.ru 2025-12-21 00:58:31 +0300    0 night_commit
+9  Tanya Maximova tanya.maksimova.2004@inbox.ru 2025-12-21 00:56:25 +0300    0 night_commit
+10 Tanya Maximova tanya.maksimova.2004@inbox.ru 2025-12-21 00:32:30 +0300    0 night_commit
+11       aaalyaaa         gribanovaalya@mail.ru 2025-12-20 23:43:38 +0300   23 night_commit
+12       aaalyaaa         gribanovaalya@mail.ru 2025-12-20 23:41:24 +0300   23 night_commit
+13       aaalyaaa         gribanovaalya@mail.ru 2025-12-20 23:24:35 +0300   23 night_commit
+14       aaalyaaa         gribanovaalya@mail.ru 2025-12-20 23:12:35 +0300   23 night_commit
+15       aaalyaaa         gribanovaalya@mail.ru 2025-12-20 23:02:58 +0300   23 night_commit
+> 
+> # Закрыть соединение
+> DBI::dbDisconnect(con, shutdown = TRUE)
+> profile
+$basic_stats
+  author_name          author_email total_commits repos_count              first_commit
+1  Nastya3210 nastya5908@yandex.com             9           1 2025-12-21 03:44:39 +0300
+                last_commit active_days
+1 2025-12-21 13:31:31 +0300           1
+
+$time_patterns
+  author_name          author_email hour commits_count
+1  Nastya3210 nastya5908@yandex.com    3             4
+2  Nastya3210 nastya5908@yandex.com    4             3
+3  Nastya3210 nastya5908@yandex.com   13             2
+
+$hourly_distribution
+  author_name          author_email hour commits percentage
+1  Nastya3210 nastya5908@yandex.com    3       4      44.44
+2  Nastya3210 nastya5908@yandex.com    4       3      33.33
+3  Nastya3210 nastya5908@yandex.com   13       2      22.22
+
+$weekday_patterns
+  author_name          author_email     weekday commits percentage
+1  Nastya3210 nastya5908@yandex.com Воскресенье       9        100
+
+$weekend_analysis
+  author_name          author_email total_commits weekend_commits weekend_percentage
+1  Nastya3210 nastya5908@yandex.com             9               9                100
+
+$change_volume
+  author_name          author_email commits total_lines_added total_lines_deleted avg_lines_added
+1  Nastya3210 nastya5908@yandex.com       9              2510                 133           16.19
+  avg_lines_deleted
+1              0.86
+
+$commit_size
+  author_name          author_email commit_size_category commits_count percentage
+1  Nastya3210 nastya5908@yandex.com     средний (51-200)             3      33.33
+2  Nastya3210 nastya5908@yandex.com    маленький (11-50)             3      33.33
+3  Nastya3210 nastya5908@yandex.com очень большой (500+)             2      22.22
+4  Nastya3210 nastya5908@yandex.com    большой (201-500)             1      11.11
+
+$stability
+  author_name          author_email total_commits total_added total_deleted add_del_ratio rewrite_percentage
+1  Nastya3210 nastya5908@yandex.com             9        2510           133         18.87                5.3
+
+$languages
+  author_name          author_email file_extension changes lines_added lines_deleted files_affected
+1  Nastya3210 nastya5908@yandex.com              R      83        1388            89              4
+2  Nastya3210 nastya5908@yandex.com            qmd      42         296            40              4
+3  Nastya3210 nastya5908@yandex.com             Rd      10         120             4              1
+4  Nastya3210 nastya5908@yandex.com            css       8         264             0              2
+5  Nastya3210 nastya5908@yandex.com             md       4         112             0              2
+6  Nastya3210 nastya5908@yandex.com            yml       4         266             0              1
+  percentage
+1      54.97
+2      27.81
+3       6.62
+4       5.30
+5       2.65
+6       2.65
+
+$sensitive_files
+[1] author_name   author_email  date          src_file      dst_file      is_sensitive  total_changes
+[8] code         
+<0 строк> (или 'row.names' нулевой длины)
+
+$productivity_daily
+  author_name          author_email commit_date commits_per_day lines_added_per_day lines_deleted_per_day
+1  Nastya3210 nastya5908@yandex.com  2025-12-21               9                2510                   133
+  avg_add_per_commit avg_del_per_commit
+1              16.19               0.86
+
+$monthly_trends
+  author_name          author_email   month commits lines_added lines_deleted
+1  Nastya3210 nastya5908@yandex.com 2025-12     155        2510           133
