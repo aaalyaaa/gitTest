@@ -15,7 +15,9 @@ Imports:
     stringr,
     DBI,
     duckdb,
-    gert
+    gert,
+    lubridate,
+    tools
 Suggests:
     testthat,
     knitr,

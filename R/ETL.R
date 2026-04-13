@@ -73,6 +73,8 @@ get_commit_history <- function(repo_path, repo_id, since = NULL) {
       fill = "right"
     ) %>%
     dplyr::mutate(
+      date = stringr::str_replace(date, " \\+[0-9]{4}$", ""),
+      date = as.character(lubridate::ymd_hms(date, tz = "UTC")),
       repo_id = repo_id,
       repo = repo_name
     )
@@ -181,11 +183,17 @@ parse_commit <- function(block, repo_id) {
 
       added <- code_lines[startsWith(code_lines, "+")]
       added <- added[!startsWith(added, "+++")]
-      added_code <- paste(substr(added, 2, nchar(added)), collapse = "\n")
+      added <- trimws(substr(added, 2, nchar(added)))
+      added <- added[added != ""]
+      added_code <- paste(added, collapse = "\n")
+      added_code <- gsub(" +\n", "\n", added_code)
 
       deleted <- code_lines[startsWith(code_lines, "-")]
       deleted <- deleted[!startsWith(deleted, "---")]
-      deleted_code <- paste(substr(deleted, 2, nchar(deleted)), collapse = "\n")
+      deleted <- trimws(substr(deleted, 2, nchar(deleted)))
+      deleted <- deleted[deleted != ""]
+      deleted_code <- paste(deleted, collapse = "\n")
+      deleted_code <- gsub(" +\n", "\n", deleted_code)
 
       results[[length(results) + 1]] <- data.frame(
         repo_id = repo_id,
@@ -205,4 +213,205 @@ parse_commit <- function(block, repo_id) {
 
   if (length(results) == 0) return(NULL)
   do.call(rbind, results)
+}
+
+#' Initialize DuckDB database
+#'
+#' Creates three tables:
+#' - repo_path: stores repositories
+#' - git_commit_history: stores commit information
+#' - git_file_changes: stores code changes
+#'
+#' @param db_path Path to DuckDB file (default: "git.duckdb")
+#' @return Database connection object
+init_db <- function(db_path = "git.duckdb") {
+  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db_path)
+
+  DBI::dbExecute(con, "INSTALL icu;")
+  DBI::dbExecute(con, "LOAD icu;")
+
+  DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS repo_path (
+      id INTEGER PRIMARY KEY,
+      repo VARCHAR NOT NULL,
+      path VARCHAR NOT NULL
+    )
+  ")
+
+  DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS git_commit_history (
+      repo_id INTEGER,
+      commit VARCHAR(40) NOT NULL,
+      parent_commit VARCHAR(40),
+      author_name VARCHAR,
+      author_email VARCHAR,
+      date TIMESTAMPTZ,
+      message TEXT,
+      repo VARCHAR,
+      PRIMARY KEY (repo_id, commit),
+      FOREIGN KEY (repo_id) REFERENCES repo_path(id)
+    )
+  ")
+
+  DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS git_file_changes (
+      repo_id INTEGER,
+      commit VARCHAR(40) NOT NULL,
+      src_file VARCHAR,
+      dst_file VARCHAR,
+      start_del INTEGER,
+      count_del INTEGER,
+      start_add INTEGER,
+      count_add INTEGER,
+      added_code TEXT,
+      deleted_code TEXT,
+      FOREIGN KEY (repo_id, commit) REFERENCES git_commit_history(repo_id, commit)
+    )
+  ")
+
+  return(con)
+}
+
+#' Get or create repository ID
+#'
+#' @param con Database connection (from init_db)
+#' @param repo_name Name of the repository
+#' @param repo_path Path to the repository
+#' @return Repository ID (integer)
+repo_id <- function(con, repo_name, repo_path) {
+
+  query <- sprintf(
+    "SELECT id FROM repo_path WHERE repo = '%s' AND path = '%s'",
+    repo_name, repo_path
+  )
+  existing <- DBI::dbGetQuery(con, query)
+
+  if (nrow(existing) > 0) {
+    return(existing$id[1])
+  }
+
+  max_id <- DBI::dbGetQuery(con, "SELECT COALESCE(MAX(id), 0) AS max_id FROM repo_path")$max_id
+  new_id <- max_id + 1
+
+  DBI::dbExecute(con, sprintf(
+    "INSERT INTO repo_path (id, repo, path) VALUES (%d, '%s', '%s')",
+    new_id, repo_name, repo_path
+  ))
+
+  return(new_id)
+}
+
+#' Write data to database
+#' @param con Database connection (from init_db)
+#' @param repo_name Name of the repository
+#' @param repo_path Path to the repository
+#' @return Invisibly returns number of new commits written
+write_repo_to_db <- function(con, repo_name, repo_path) {
+
+  repo_id_value <- repo_id(con, repo_name, repo_path)
+
+  has_data <- DBI::dbGetQuery(con, sprintf(
+    "SELECT EXISTS(SELECT 1 FROM git_commit_history WHERE repo_id = %d) AS has_data",
+    repo_id_value
+  ))$has_data
+
+  if (has_data) {
+    last_commit <- DBI::dbGetQuery(con, sprintf(
+      "SELECT commit FROM git_commit_history
+       WHERE repo_id = %d
+       ORDER BY date DESC LIMIT 1",
+      repo_id_value
+    ))$commit
+
+    commits <- get_commit_history(repo_path, repo_id_value, since = last_commit)
+  } else {
+    commits <- get_commit_history(repo_path, repo_id_value)
+  }
+
+  if (nrow(commits) == 0) {
+    message("No new commits to add")
+    return(invisible(0))
+  }
+
+  DBI::dbWriteTable(con, "git_commit_history", commits, append = TRUE)
+
+  all_blocks <- get_commits(repo_path)
+
+  block_hashes <- sapply(all_blocks, function(block) {
+    first_line <- block[1]
+    hash <- sub("^commit ", "", first_line)
+    strsplit(hash, " ")[[1]][1]
+  })
+
+  keep <- block_hashes %in% commits$commit
+  blocks <- all_blocks[keep]
+
+  all_changes <- list()
+  for (i in seq_along(blocks)) {
+    res <- parse_commit(blocks[[i]], repo_id_value)
+    if (!is.null(res)) all_changes[[i]] <- res
+  }
+
+  changes_df <- do.call(rbind, all_changes)
+
+  if (nrow(changes_df) > 0) {
+    DBI::dbWriteTable(con, "git_file_changes", changes_df, append = TRUE)
+  }
+
+  message(sprintf("Added %d new commits and %d changes",
+                  nrow(commits), nrow(changes_df)))
+
+  invisible(nrow(commits))
+}
+
+#' Run ETL pipeline
+#'
+#' @param mode 0 = local, 1 = remote
+#' @param repo_url GitHub URL (for mode = 1)
+#' @param local_path Path to local repo (for mode = 0)
+#' @param clone_dir Directory for cloning (for mode = 1, optional)
+#' @param db_path Path to DuckDB database (default: "git.duckdb")
+#' @return List with status, message, repo_path, and db_path
+#' @export
+run_etl_pipeline <- function(mode, repo_url = NULL, local_path = NULL,
+                             clone_dir = NULL, db_path = "git.duckdb") {
+
+  tryCatch({
+    if (mode == 0) {
+      if (is.null(local_path)) {
+        stop("local_path is required for mode = 0")
+      }
+      repo_path <- clone_or_pull(mode = 0, local_path = local_path)
+      repo_name <- basename(local_path)
+
+    } else if (mode == 1) {
+      if (is.null(repo_url)) {
+        stop("repo_url is required for mode = 1")
+      }
+      repo_path <- clone_or_pull(mode = 1, repo_url = repo_url, clone_dir = clone_dir)
+      repo_name <- gsub(".*/(.+)\\.git$", "\\1", repo_url)
+
+    } else {
+      stop("mode must be 0 (local) or 1 (remote)")
+    }
+
+    con <- init_db(db_path)
+
+    write_repo_to_db(con, repo_name, repo_path)
+
+    DBI::dbDisconnect(con, shutdown = TRUE)
+
+    return(list(
+      status = "success",
+      message = sprintf("Repository '%s' successfully loaded", repo_name),
+      repo_path = repo_path,
+      db_path = db_path
+    ))
+
+  }, error = function(e) {
+    return(list(
+      status = "error",
+      message = e$message
+    ))
+  })
 }
