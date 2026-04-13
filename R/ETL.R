@@ -1,65 +1,49 @@
-#' Prepare a Git repository for analysis
+#' Clone or update a Git repository
 #'
-#' @param repo_url URL of the repository (or NULL for local)
-#' @param repo_name Name of the repository
-#' @param clone_dir Directory where to clone
-#' @param local_path Path to local repository (if mode = 0)
 #' @param mode 0 = local, 1 = remote
-#' @return Path to the repository
-#' @export
-prepare_repo <- function(mode, repo_url = NULL, repo_name = NULL,
-                         clone_dir = NULL, local_path = NULL) {
+#' @param repo_url GitHub URL (for mode = 1)
+#' @param clone_dir Where to clone (for mode = 1)
+#' @param local_path Path to local repo (for mode = 0)
+#' @return Path to repository
+clone_or_pull <- function(mode, repo_url = NULL, clone_dir = NULL, local_path = NULL) {
 
   if (mode == 0) {
-    if (!dir.exists(local_path)) {
-      stop("Local repository path does not exist: ", local_path)
-    }
-    cmd <- sprintf('git -C "%s" pull', local_path)
-    system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+    system(sprintf('git -C "%s" pull', local_path))
     return(local_path)
+  }
 
-  } else if (mode == 1) {
-    if (is.null(clone_dir)) {
-      clone_dir <- tempdir()
-    }
+  if (mode == 1) {
+    if (is.null(clone_dir)) clone_dir <- tempdir()
 
+    repo_name <- gsub(".*/(.+)\\.git$", "\\1", repo_url)
     repo_path <- file.path(clone_dir, repo_name)
 
     if (dir.exists(repo_path)) {
-      cmd <- sprintf('git -C "%s" pull', repo_path)
-      system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+      system(sprintf('git -C "%s" pull', repo_path))
     } else {
-      cmd <- sprintf('git clone "%s" "%s"', repo_url, repo_path)
-      system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+      system(sprintf('git clone "%s" "%s"', repo_url, repo_path))
     }
-
     return(repo_path)
-  } else {
-    stop("Invalid mode. Use 0 for local, 1 for remote")
   }
-}
 
+  stop("mode must be 0 (local) or 1 (remote)")
+}
 
 #' Get commit history from a Git repository
 #'
 #' @param repo_path Path to local Git repository
 #' @param repo_id Numeric ID of the repository
-#' @param repo_name Name of the repository
 #' @param since Optional: only commits after this commit hash
-#' @return Data frame with commit history (includes author email, committer info, branches)
+#' @return Data frame with commit history
 #' @export
-get_commit_history <- function(repo_path, repo_id, repo_name, since = NULL) {
-
-  # %H - полный хэш коммита
+get_commit_history <- function(repo_path, repo_id, since = NULL) {
+  # %H - хэш коммита
   # %P - хэш родительского коммита
   # %an - имя автора
   # %ae - email автора
-  # %cn - имя коммитера
-  # %ce - email коммитера
-  # %ai - дата автора (ISO формат)
-  # %s - сообщение коммита (первая строка)
-  # %d - ссылки на ветки и теги
-  format_string <- "%H\t%P\t%an\t%ae\t%cn\t%ce\t%ai\t%s\t%d"
+  # %ai - дата
+  # %s - сообщение коммита
+  format_string <- "%H\t%P\t%an\t%ae\t%ai\t%s"
 
   if (is.null(since)) {
     cmd <- sprintf(
@@ -79,18 +63,16 @@ get_commit_history <- function(repo_path, repo_id, repo_name, since = NULL) {
     return(data.frame())
   }
 
+  repo_name <- basename(repo_path)
+
   commits <- data.frame(lines = output, stringsAsFactors = FALSE) %>%
     tidyr::separate(
       col = lines,
-      into = c("commit", "parent_commit", "author_name", "author_email",
-               "committer_name", "committer_email", "date", "message", "branches"),
+      into = c("commit", "parent_commit", "author_name", "author_email", "date", "message"),
       sep = "\t",
       fill = "right"
     ) %>%
     dplyr::mutate(
-      branches = stringr::str_replace_all(branches, "[()]", ""),
-      branches = dplyr::na_if(branches, ""),
-
       repo_id = repo_id,
       repo = repo_name
     )
@@ -98,409 +80,129 @@ get_commit_history <- function(repo_path, repo_id, repo_name, since = NULL) {
   return(commits)
 }
 
-#' Parse git diff output into structured data frame
+#' Parse git log -p output into commit blocks
 #'
-#' @param diff_lines Character vector of git diff output
+#' @param repo_path Path to local Git repository
+#' @return List of character vectors, each vector is one commit block
+get_commits <- function(repo_path) {
+  con <- pipe(sprintf('git -C "%s" log -p --unified=0 -w --ignore-blank-lines', repo_path))
+  lines <- readLines(con)
+  close(con)
+
+  commit_starts <- grep("^commit ", lines)
+
+  commits_blocks <- list()
+  for (i in seq_along(commit_starts)) {
+    start <- commit_starts[i]
+    end <- ifelse(i < length(commit_starts), commit_starts[i+1] - 1, length(lines))
+    commits_blocks[[i]] <- lines[start:end]
+  }
+
+  return(commits_blocks)
+}
+
+#' Parse a hunk line (@@ ... @@) to extract line numbers
+#' Supports multiple formats:
+#' - @@ -10,5 +10,8 @@
+#' - @@ -10 +10 @@
+#' - @@ -10,5 +10 @@
+#' - @@ -10 +10,5 @@
+#'
+#' @param line A string starting with "@@ "
+#' @return Numeric vector of length 4: c(start_del, count_del, start_add, count_add) or NULL if parsing fails
+parse_hunk_line <- function(line) {
+  # Шаблон: -start_del(,count_del)? +start_add(,count_add)?
+  pattern <- "^@@ -([0-9]+)(?:,([0-9]+))? \\+([0-9]+)(?:,([0-9]+))? @@"
+  matches <- regexec(pattern, line)
+  parts <- regmatches(line, matches)[[1]]
+
+  if (length(parts) < 4) return(NULL)
+
+  start_del <- as.integer(parts[2])
+  count_del <- ifelse(is.na(parts[3]) || parts[3] == "", 1, as.integer(parts[3]))
+  start_add <- as.integer(parts[4])
+  count_add <- ifelse(is.na(parts[5]) || parts[5] == "", 1, as.integer(parts[5]))
+
+  return(c(start_del, count_del, start_add, count_add))
+}
+
+#' Parse a single commit block into a data frame of changes
+#'
+#' @param block Character vector representing one commit (from get_commits())
 #' @param repo_id Numeric ID of the repository
-#' @param repo_name Name of the repository
-#' @return Data frame with parsed diff information including file types and change statistics
-#' @export
-parse_git_diff <- function(diff_lines, repo_id, repo_name) {
+#' @return Data frame with columns:
+#'         commit, src_file, dst_file, start_del, count_del, start_add, count_add, added_code, deleted_code
+parse_commit <- function(block, repo_id) {
+  first_line <- block[1]
+  hash <- sub("^commit ", "", first_line)
+  hash <- strsplit(hash, " ")[[1]][1]
 
-  if (length(diff_lines) == 0 || all(diff_lines == "")) {
-    return(data.frame())
-  }
+  diff_lines <- grep("^diff --git", block)
+  if (length(diff_lines) == 0) return(NULL)
 
-  df <- data.frame(lines = diff_lines, stringsAsFactors = FALSE)
+  results <- list()
 
-  df <- df %>%
-    dplyr::filter(
-      !grepl('^Author', lines),
-      !grepl('^Date', lines),
-      !grepl('^diff', lines),
-      !grepl('^index', lines),
-      !grepl('^deleted', lines),
-      !grepl('^new', lines),
-      !grepl('^Merge', lines),
-      lines != ""
-    )
+  for (i in seq_along(diff_lines)) {
+    start <- diff_lines[i]
+    end <- ifelse(i < length(diff_lines), diff_lines[i+1] - 1, length(block))
+    file_block <- block[start:end]
 
-  df <- df %>%
-    dplyr::mutate(
-      is_commit_start = grepl("^commit ", lines),
-      commit_id = cumsum(is_commit_start)
-    ) %>%
-    dplyr::mutate(
-      commit = ifelse(is_commit_start,
-                      stringr::str_replace(lines, "^commit ", ""),
-                      NA_character_)
-    )
+    src_line <- grep("^--- ", file_block, value = TRUE)[1]
+    dst_line <- grep("^\\+\\+\\+ ", file_block, value = TRUE)[1]
+    if (is.na(src_line) || is.na(dst_line)) next
 
-  df <- df %>%
-    dplyr::mutate(
-      src_file = stringr::str_sub(
-        stringr::str_extract(lines, "^--- .*"),
-        4
-      ),
-      dst_file = stringr::str_sub(
-        stringr::str_extract(lines, "^\\+\\+\\+ .*"),
-        4
-      )
-    )
+    src_file <- sub("^--- a/", "", src_line)
+    src_file <- sub("^--- /dev/null", NA_character_, src_file)
+    dst_file <- sub("^\\+\\+\\+ b/", "", dst_line)
 
-  df <- df %>%
-    dplyr::mutate(
-      range = stringr::str_match(
-        lines,
-        "-([0-9]+)(?:,([0-9]+))?\\s*\\+([0-9]+)(?:,([0-9]+))?"
-      ),
-      start_del = as.integer(range[,2]),
-      count_del = ifelse(grepl("^@@ ", lines),
-                         ifelse(is.na(as.integer(range[,3])), 1L, as.integer(range[,3])),
-                         NA_integer_),
-      start_add = as.integer(range[,4]),
-      count_add = ifelse(grepl("^@@ ", lines),
-                         ifelse(is.na(as.integer(range[,5])), 1L, as.integer(range[,5])),
-                         NA_integer_)
-    )
+    hunk_indices <- grep("^@@ ", file_block)
 
-  df <- df %>%
-    dplyr::mutate(
-      is_segment_start = grepl("^@@ ", lines),
-      segment_id = cumsum(is_segment_start)
-    )
+    for (idx in hunk_indices) {
+      hunk_line <- file_block[idx]
 
-  df <- df %>%
-    tidyr::fill(commit, src_file, dst_file, start_del, count_del,
-                start_add, count_add, segment_id)
+      parsed <- parse_hunk_line(hunk_line)
+      if (is.null(parsed)) next
 
-  df <- df %>%
-    dplyr::filter(!is_commit_start, !grepl("^@@ ", lines), !is.na(src_file))
+      start_del <- parsed[1]
+      count_del <- parsed[2]
+      start_add <- parsed[3]
+      count_add <- parsed[4]
 
-  if (nrow(df) == 0) {
-    return(data.frame())
-  }
-
-  df <- df %>%
-    dplyr::mutate(
-      is_add = grepl("^\\+", lines),
-      code = stringr::str_sub(lines, 2)
-    ) %>%
-    dplyr::filter(code != "")
-
-  df <- df %>%
-    dplyr::mutate(
-      file_path = dplyr::coalesce(dst_file, src_file),
-      file_extension = tools::file_ext(file_path),
-      is_sensitive = grepl("\\.env$|password|secret|key\\.|pem$|private|credentials",
-                           file_path, ignore.case = TRUE)
-    )
-
-  code_aggregated <- df %>%
-    dplyr::group_by(segment_id, is_add) %>%
-    dplyr::summarise(
-      code = paste(code, collapse = ""),
-      .groups = "drop"
-    ) %>%
-    dplyr::mutate(
-      code = stringr::str_replace_all(code, "[^[:alnum:][:punct:]]", "")
-    ) %>%
-    dplyr::filter(code != "")
-
-  unique_segments <- df %>%
-    dplyr::select(commit, src_file, dst_file, file_extension, is_sensitive,
-                  start_del, count_del, start_add, count_add, segment_id) %>%
-    dplyr::distinct()
-
-  result <- dplyr::left_join(
-    unique_segments,
-    code_aggregated,
-    by = "segment_id"
-  ) %>%
-    dplyr::mutate(
-      repo_id = repo_id,
-      repo = repo_name
-    ) %>%
-    dplyr::select(
-      commit, src_file, dst_file, file_extension, is_sensitive,
-      start_del, count_del, start_add, count_add, code, is_add,
-      repo, repo_id
-    )
-
-  return(result)
-}
-
-#' Initialize DuckDB database for storing Git data
-#'
-#' @param db_path Path to DuckDB file
-#' @return Database connection
-#' @export
-init_db <- function(db_path = "git.duckdb") {
-  con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db_path)
-
-  # Таблица репозиториев
-  DBI::dbExecute(con, "
-    CREATE TABLE IF NOT EXISTS repo_path (
-      id INTEGER,
-      repo VARCHAR,
-      path VARCHAR
-    )
-  ")
-
-  # Таблица истории коммитов (расширенная)
-  DBI::dbExecute(con, "
-    CREATE TABLE IF NOT EXISTS git_commit_history (
-      commit VARCHAR,
-      parent_commit VARCHAR,
-      author_name VARCHAR,
-      author_email VARCHAR,
-      committer_name VARCHAR,
-      committer_email VARCHAR,
-      date VARCHAR,
-      message VARCHAR,
-      branches VARCHAR,
-      repo VARCHAR,
-      repo_id INTEGER
-    )
-  ")
-
-  # Таблица изменений (расширенная)
-  DBI::dbExecute(con, "
-    CREATE TABLE IF NOT EXISTS git_diff (
-      commit VARCHAR,
-      src_file VARCHAR,
-      dst_file VARCHAR,
-      file_extension VARCHAR,
-      is_sensitive BOOLEAN,
-      start_del INTEGER,
-      count_del INTEGER,
-      start_add INTEGER,
-      count_add INTEGER,
-      code VARCHAR,
-      is_add BOOLEAN,
-      repo VARCHAR,
-      repo_id INTEGER
-    )
-  ")
-
-  return(con)
-}
-
-
-#' Get or create repository ID
-#'
-#' @param con Database connection
-#' @param repo_name Repository name
-#' @param repo_path Path to repository
-#' @return Repository ID
-#' @export
-get_or_create_repo_id <- function(con, repo_name, repo_path) {
-  # Проверяем, существует ли уже
-  query <- sprintf(
-    "SELECT id FROM repo_path WHERE repo = '%s' AND path = '%s'",
-    repo_name, repo_path
-  )
-  existing <- DBI::dbGetQuery(con, query)
-
-  if (nrow(existing) > 0) {
-    return(existing$id[1])
-  }
-
-  # Создаем новый ID
-  max_id <- DBI::dbGetQuery(con, "SELECT COALESCE(MAX(id), 0) AS max_id FROM repo_path")$max_id
-  new_id <- max_id + 1
-
-  DBI::dbExecute(con, sprintf(
-    "INSERT INTO repo_path (id, repo, path) VALUES (%d, '%s', '%s')",
-    new_id, repo_name, repo_path
-  ))
-
-  return(new_id)
-}
-
-
-#' Write repository data to database
-#'
-#' @param con Database connection
-#' @param repo_name Repository name
-#' @param repo_path Path to repository
-#' @export
-write_repo_to_db <- function(con, repo_name, repo_path) {
-
-  repo_id <- get_or_create_repo_id(con, repo_name, repo_path)
-
-  # Проверяем, есть ли уже данные
-  has_data <- DBI::dbGetQuery(con, sprintf(
-    "SELECT EXISTS(SELECT 1 FROM git_commit_history WHERE repo_id = %d) AS has_data",
-    repo_id
-  ))$has_data
-
-  if (has_data) {
-    # Получаем последний коммит в базе
-    last_commit <- DBI::dbGetQuery(con, sprintf(
-      "SELECT commit FROM git_commit_history WHERE repo_id = %d ORDER BY date DESC LIMIT 1",
-      repo_id
-    ))$commit
-
-    if (length(last_commit) > 0 && !is.na(last_commit)) {
-      # Получаем только новые коммиты
-      commits <- get_commit_history(repo_path, repo_id, repo_name, since = last_commit)
-
-      if (nrow(commits) > 0) {
-        DBI::dbWriteTable(con, "git_commit_history", commits, append = TRUE)
-
-        # Для diff нужно получить новые коммиты
-        cmd <- sprintf(
-          'git -C "%s" log -p --unified=0 -w %s..HEAD',
-          repo_path, last_commit
-        )
-        diff_output <- system(cmd, intern = TRUE)
-        diff_df <- parse_git_diff(diff_output, repo_id, repo_name)
-
-        if (nrow(diff_df) > 0) {
-          DBI::dbWriteTable(con, "git_diff", diff_df, append = TRUE)
+      code_lines <- c()
+      next_idx <- idx + 1
+      while (next_idx <= length(file_block)) {
+        next_line <- file_block[next_idx]
+        if (grepl("^@@ ", next_line)) break
+        if (grepl("^[+-]", next_line)) {
+          code_lines <- c(code_lines, next_line)
         }
+        next_idx <- next_idx + 1
       }
-    }
-  } else {
-    # Первая загрузка: все коммиты
-    commits <- get_commit_history(repo_path, repo_id, repo_name, since = NULL)
-    if (nrow(commits) > 0) {
-      DBI::dbWriteTable(con, "git_commit_history", commits, append = TRUE)
-    }
 
-    # Получаем все diff
-    cmd <- sprintf('git -C "%s" log -p --unified=0 -w', repo_path)
-    diff_output <- system(cmd, intern = TRUE)
-    diff_df <- parse_git_diff(diff_output, repo_id, repo_name)
+      added <- code_lines[startsWith(code_lines, "+")]
+      added <- added[!startsWith(added, "+++")]
+      added_code <- paste(substr(added, 2, nchar(added)), collapse = "\n")
 
-    if (nrow(diff_df) > 0) {
-      DBI::dbWriteTable(con, "git_diff", diff_df, append = TRUE)
+      deleted <- code_lines[startsWith(code_lines, "-")]
+      deleted <- deleted[!startsWith(deleted, "---")]
+      deleted_code <- paste(substr(deleted, 2, nchar(deleted)), collapse = "\n")
+
+      results[[length(results) + 1]] <- data.frame(
+        repo_id = repo_id,
+        commit = hash,
+        src_file = src_file,
+        dst_file = dst_file,
+        start_del = start_del,
+        count_del = count_del,
+        start_add = start_add,
+        count_add = count_add,
+        added_code = added_code,
+        deleted_code = deleted_code,
+        stringsAsFactors = FALSE
+      )
     }
   }
+
+  if (length(results) == 0) return(NULL)
+  do.call(rbind, results)
 }
-
-
-#' Run the complete ETL pipeline
-#'
-#' @param mode 0 = local, 1 = remote, 2 = GitHub user
-#' @param repo_url URL for remote repository (mode 1)
-#' @param repo_local_dir Local path (mode 0)
-#' @param clone_dir Directory for cloning (mode 1 or 2)
-#' @param username GitHub username (mode 2)
-#' @param db_path Path to DuckDB database
-#' @return List with status and message
-#' @export
-run_etl_pipeline <- function(mode, repo_url = NA, repo_local_dir = NA,
-                             clone_dir = NA, username = NA,
-                             db_path = "git.duckdb") {
-
-  tryCatch({
-    # Инициализируем базу
-    con <- init_db(db_path)
-
-    if (mode == 0) {
-      # Локальный репозиторий
-      if (is.na(repo_local_dir)) {
-        stop("For mode 0, please provide repo_local_dir")
-      }
-      repo_path <- prepare_repo(
-        mode = 0,
-        local_path = repo_local_dir
-      )
-      repo_name <- basename(repo_local_dir)
-      write_repo_to_db(con, repo_name, repo_path)
-
-    } else if (mode == 1) {
-      # Удаленный репозиторий по URL
-      if (is.na(repo_url)) {
-        stop("For mode 1, please provide repo_url")
-      }
-      repo_name <- gsub(".*/(.+)\\.git$", "\\1", repo_url)
-      if (is.na(clone_dir)) {
-        clone_dir <- tempdir()
-      }
-      repo_path <- prepare_repo(
-        mode = 1,
-        repo_url = repo_url,
-        repo_name = repo_name,
-        clone_dir = clone_dir
-      )
-      write_repo_to_db(con, repo_name, repo_path)
-
-    } else if (mode == 2) {
-      # Все репозитории пользователя GitHub
-      if (is.na(username)) {
-        stop("For mode 2, please provide username")
-      }
-      if (is.na(clone_dir)) {
-        clone_dir <- tempdir()
-      }
-      repo_list <- get_github_repos(username)
-
-      for (repo_url_item in repo_list) {
-        repo_name <- gsub(".*/(.+)\\.git$", "\\1", repo_url_item)
-        repo_path <- prepare_repo(
-          mode = 1,
-          repo_url = repo_url_item,
-          repo_name = repo_name,
-          clone_dir = clone_dir
-        )
-        write_repo_to_db(con, repo_name, repo_path)
-      }
-    } else {
-      stop("Invalid mode. Use 0 (local), 1 (remote), or 2 (GitHub user)")
-    }
-
-    DBI::dbDisconnect(con, shutdown = TRUE)
-
-    return(list(
-      status = "success",
-      message = "Data successfully loaded"
-    ))
-
-  }, error = function(e) {
-    return(list(
-      status = "error",
-      message = e$message
-    ))
-  })
-}
-
-#' Extract file extension from file path
-#'
-#' @param file_path Character file path
-#' @return Character extension (without dot)
-#' @export
-get_file_extension <- function(file_path) {
-  tools::file_ext(file_path)
-}
-
-
-#' Check if file is sensitive (contains secrets, keys, etc.)
-#'
-#' @param file_path Character file path
-#' @return Logical
-#' @export
-is_sensitive_file <- function(file_path) {
-  sensitive_patterns <- c("\\.env$", "password", "secret", "key\\.", "pem$",
-                          "private", "credentials", "token", "cert")
-  any(grepl(paste(sensitive_patterns, collapse = "|"),
-            file_path, ignore.case = TRUE))
-}
-
-
-#' Normalize author by email
-#'
-#' @param author_name Author name string
-#' @param author_email Author email string
-#' @return Normalized author identifier
-#' @export
-normalize_author <- function(author_name, author_email) {
-  if (!is.na(author_email) && author_email != "") {
-    return(author_email)
-  } else {
-    return(tolower(trimws(author_name)))
-  }
-}
-
