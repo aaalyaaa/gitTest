@@ -7,13 +7,60 @@
 #' @return Path to repository
 clone_or_pull <- function(mode, repo_url = NULL, clone_dir = NULL, local_path = NULL) {
 
+  git_error <- function(class, message, ...) {
+    structure(
+      list(message = message, ...),
+      class = c(class, "error", "condition")
+    )
+  }
+
   if (mode == 0) {
+    if (is.null(local_path) || local_path == "") {
+      stop(git_error("path_required_error", "local_path is required for mode = 0"))
+    }
+    if (!dir.exists(local_path)) {
+      stop(git_error("path_not_found_error", paste("Path does not exist:", local_path), path = local_path))
+    }
+    if (!dir.exists(file.path(local_path, ".git"))) {
+      stop(git_error("not_git_repo_error", paste("Not a Git repository:", local_path), path = local_path))
+    }
     system(sprintf('git -C "%s" pull', local_path))
     return(local_path)
   }
 
   if (mode == 1) {
+    if (is.null(repo_url) || repo_url == "") {
+      stop(git_error("url_required_error", "repo_url is required for mode = 1"))
+    }
+
+    if (!grepl("github\\.com", repo_url, ignore.case = TRUE)) {
+      stop(git_error("invalid_url_error", "Only GitHub URLs are supported", url = repo_url))
+    }
+
+    repo_url <- gsub("/$", "", repo_url)
+    if (!grepl("\\.git$", repo_url)) {
+      repo_url <- paste0(repo_url, ".git")
+    }
+
+    if (!grepl("^https?://github\\.com/[^/]+/[^/]+\\.git$", repo_url)) {
+      stop(git_error("invalid_url_format_error",
+                     "Invalid GitHub URL format. Expected: https://github.com/username/repo.git",
+                     url = repo_url))
+    }
+
+    check_cmd <- sprintf('git ls-remote "%s" HEAD', repo_url)
+    check_result <- system(check_cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+    if (check_result != 0) {
+      stop(git_error("repo_not_found_error",
+                     "Repository not found or inaccessible. Check URL and your connection.",
+                     url = repo_url))
+    }
+
     if (is.null(clone_dir)) clone_dir <- tempdir()
+
+    if (!dir.exists(clone_dir)) {
+      stop(git_error("clone_dir_error", paste("Clone directory does not exist:", clone_dir), path = clone_dir))
+    }
 
     repo_name <- gsub(".*/(.+)\\.git$", "\\1", repo_url)
     repo_path <- file.path(clone_dir, repo_name)
@@ -43,6 +90,7 @@ get_commit_history <- function(repo_path, repo_id, since = NULL) {
   # %ae - email автора
   # %ai - дата
   # %s - сообщение коммита
+
   format_string <- "%H\t%P\t%an\t%ae\t%ai\t%s"
 
   if (is.null(since)) {
@@ -87,6 +135,7 @@ get_commit_history <- function(repo_path, repo_id, since = NULL) {
 #' @param repo_path Path to local Git repository
 #' @return List of character vectors, each vector is one commit block
 get_commits <- function(repo_path) {
+
   con <- pipe(sprintf('git -C "%s" log -p --unified=0 -w --ignore-blank-lines', repo_path))
   lines <- readLines(con)
   close(con)
@@ -280,6 +329,10 @@ init_db <- function(db_path = "git.duckdb") {
 #' @return Repository ID (integer)
 repo_id <- function(con, repo_name, repo_path) {
 
+  if (!DBI::dbIsValid(con)) {
+    stop("Database connection is not valid. Please re-establish connection.")
+  }
+
   query <- sprintf(
     "SELECT id FROM repo_path WHERE repo = '%s' AND path = '%s'",
     repo_name, repo_path
@@ -307,6 +360,10 @@ repo_id <- function(con, repo_name, repo_path) {
 #' @param repo_path Path to the repository
 #' @return Invisibly returns number of new commits written
 write_repo_to_db <- function(con, repo_name, repo_path) {
+
+  if (!DBI::dbIsValid(con)) {
+    stop("Database connection is not valid. Please re-establish connection.")
+  }
 
   repo_id_value <- repo_id(con, repo_name, repo_path)
 
