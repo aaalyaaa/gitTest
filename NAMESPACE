@@ -2,3 +2,4 @@
 
 export(get_commit_history)
 export(run_etl_pipeline)
+importFrom(magrittr,"%>%")

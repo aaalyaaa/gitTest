@@ -1,3 +1,5 @@
+#' @importFrom magrittr %>%
+NULL
 #' Clone or update a Git repository
 #'
 #' @param mode 0 = local, 1 = remote
