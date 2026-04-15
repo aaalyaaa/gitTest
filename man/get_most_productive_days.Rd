@@ -4,12 +4,10 @@
 \alias{get_most_productive_days}
 \title{Самые продуктивные дни}
 \usage{
-get_most_productive_days(conn, email = NULL, username = NULL)
+get_most_productive_days(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
-
-\item{email}{Email разработчика (опционально)}
 
 \item{username}{Никнейм разработчика (опционально)}
 }

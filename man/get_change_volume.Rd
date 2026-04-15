@@ -4,14 +4,12 @@
 \alias{get_change_volume}
 \title{Анализ объема изменений}
 \usage{
-get_change_volume(conn, username = NULL, email = NULL)
+get_change_volume(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
 
 \item{username}{Никнейм разработчика (опционально)}
-
-\item{email}{Email разработчика (опционально)}
 }
 \value{
 data.frame с результатами анализа

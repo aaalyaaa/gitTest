@@ -93,7 +93,7 @@ get_commit_history <- function(repo_path, repo_id, since = NULL) {
   # %ai - дата
   # %s - сообщение коммита
 
-  format_string <- "%H\t%P\t%an\t%ae\t%ai\t%s"
+  format_string <- "%H\t%P\t%an\t%ai\t%s"
 
   if (is.null(since)) {
     cmd <- sprintf(
@@ -118,7 +118,7 @@ get_commit_history <- function(repo_path, repo_id, since = NULL) {
   commits <- data.frame(lines = output, stringsAsFactors = FALSE) %>%
     tidyr::separate(
       col = lines,
-      into = c("commit", "parent_commit", "author_name", "author_email", "date", "message"),
+      into = c("commit", "parent_commit", "author_name", "date", "message"),
       sep = "\t",
       fill = "right"
     ) %>%
@@ -295,7 +295,6 @@ init_db <- function(db_path = "git.duckdb") {
       commit VARCHAR(40) NOT NULL,
       parent_commit VARCHAR(40),
       author_name VARCHAR,
-      author_email VARCHAR,
       date TIMESTAMPTZ,
       message TEXT,
       repo VARCHAR,

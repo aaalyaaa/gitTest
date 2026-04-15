@@ -2,7 +2,7 @@
 % Please edit documentation in R/profile_developers.R
 \name{search_developers}
 \alias{search_developers}
-\title{Поиск разработчиков по имени или email}
+\title{Поиск разработчиков по имени}
 \usage{
 search_developers(conn, search_term)
 }
@@ -15,5 +15,5 @@ search_developers(conn, search_term)
 data.frame с найденными разработчиками
 }
 \description{
-Поиск разработчиков по имени или email
+Поиск разработчиков по имени
 }

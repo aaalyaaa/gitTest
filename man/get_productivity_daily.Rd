@@ -4,12 +4,10 @@
 \alias{get_productivity_daily}
 \title{Анализ продуктивности (коммиты и изменения по дням)}
 \usage{
-get_productivity_daily(conn, email = NULL, username = NULL)
+get_productivity_daily(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
-
-\item{email}{Email разработчика (опционально)}
 
 \item{username}{Никнейм разработчика (опционально)}
 }

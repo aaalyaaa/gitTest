@@ -4,12 +4,10 @@
 \alias{get_preferred_languages}
 \title{Предпочитаемые языки программирования}
 \usage{
-get_preferred_languages(conn, email = NULL, username = NULL)
+get_preferred_languages(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
-
-\item{email}{Email разработчика (опционально)}
 
 \item{username}{Никнейм разработчика (опционально)}
 }

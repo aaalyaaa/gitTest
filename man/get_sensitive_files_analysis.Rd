@@ -4,12 +4,10 @@
 \alias{get_sensitive_files_analysis}
 \title{Работа с чувствительными файлами (безопасность)}
 \usage{
-get_sensitive_files_analysis(conn, email = NULL, username = NULL)
+get_sensitive_files_analysis(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
-
-\item{email}{Email разработчика (опционально)}
 
 \item{username}{Никнейм разработчика (опционально)}
 }

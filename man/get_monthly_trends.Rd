@@ -4,12 +4,10 @@
 \alias{get_monthly_trends}
 \title{Тренды активности по месяцам}
 \usage{
-get_monthly_trends(conn, email = NULL, username = NULL)
+get_monthly_trends(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
-
-\item{email}{Email разработчика (опционально)}
 
 \item{username}{Никнейм разработчика (опционально)}
 }

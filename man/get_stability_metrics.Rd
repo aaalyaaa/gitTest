@@ -4,12 +4,10 @@
 \alias{get_stability_metrics}
 \title{Анализ стабильности (соотношение добавлений/удалений)}
 \usage{
-get_stability_metrics(conn, email = NULL, username = NULL)
+get_stability_metrics(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
-
-\item{email}{Email разработчика (опционально)}
 
 \item{username}{Никнейм разработчика (опционально)}
 }

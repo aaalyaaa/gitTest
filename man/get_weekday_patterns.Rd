@@ -4,14 +4,12 @@
 \alias{get_weekday_patterns}
 \title{Анализ активности по дням недели}
 \usage{
-get_weekday_patterns(conn, username = NULL, email = NULL)
+get_weekday_patterns(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
 
 \item{username}{Никнейм разработчика (опционально)}
-
-\item{email}{Email разработчика (опционально)}
 }
 \value{
 data.frame с результатами анализа

@@ -4,14 +4,12 @@
 \alias{get_weekend_analysis}
 \title{Анализ работы в выходные}
 \usage{
-get_weekend_analysis(conn, username = NULL, email = NULL)
+get_weekend_analysis(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
 
 \item{username}{Никнейм разработчика (опционально)}
-
-\item{email}{Email разработчика (опционально)}
 }
 \value{
 data.frame с результатами анализа

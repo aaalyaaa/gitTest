@@ -4,14 +4,12 @@
 \alias{get_time_patterns}
 \title{Анализ временных паттернов по часам}
 \usage{
-get_time_patterns(conn, username = NULL, email = NULL)
+get_time_patterns(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
 
 \item{username}{Никнейм разработчика (опционально)}
-
-\item{email}{Email разработчика (опционально)}
 }
 \value{
 data.frame с результатами анализа

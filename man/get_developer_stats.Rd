@@ -4,14 +4,12 @@
 \alias{get_developer_stats}
 \title{Профилирование разработчиков}
 \usage{
-get_developer_stats(conn, username = NULL, email = NULL)
+get_developer_stats(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
 
 \item{username}{Никнейм разработчика (опционально)}
-
-\item{email}{Email разработчика (опционально)}
 }
 \value{
 data.frame с результатами анализа

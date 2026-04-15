@@ -4,14 +4,12 @@
 \alias{get_hourly_distribution}
 \title{Часовое распределение с процентами}
 \usage{
-get_hourly_distribution(conn, username = NULL, email = NULL)
+get_hourly_distribution(conn, username = NULL)
 }
 \arguments{
 \item{conn}{Подключение к базе данных DuckDB}
 
 \item{username}{Никнейм разработчика (опционально)}
-
-\item{email}{Email разработчика (опционально)}
 }
 \value{
 data.frame с результатами анализа
