@@ -13,13 +13,11 @@
 #' Получить общую статистику по разработчикам
 #' @param conn Подключение к базе данных DuckDB
 #' @param username Никнейм разработчика (опционально)
-#' @param email Email разработчика (опционально)
 #' @return data.frame с результатами анализа
-get_developer_stats <- function(conn, username = NULL, email = NULL) {
+get_developer_stats <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         COUNT(DISTINCT commit) as total_commits,
         COUNT(DISTINCT repo) as repos_count,
         MIN(date) as first_commit,
@@ -32,15 +30,12 @@ get_developer_stats <- function(conn, username = NULL, email = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email ORDER BY total_commits DESC")
+  query <- paste0(query, " GROUP BY author_name ORDER BY total_commits DESC")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -48,13 +43,11 @@ get_developer_stats <- function(conn, username = NULL, email = NULL) {
 #' Анализ временных паттернов по часам
 #' @param conn Подключение к базе данных DuckDB
 #' @param username Никнейм разработчика (опционально)
-#' @param email Email разработчика (опционально)
 #' @return data.frame с результатами анализа
-get_time_patterns <- function(conn, username = NULL, email = NULL) {
+get_time_patterns <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         CAST(SUBSTR(date, 12, 2) AS INTEGER) as hour,
         COUNT(*) as commits_count
     FROM git_commit_history
@@ -64,15 +57,12 @@ get_time_patterns <- function(conn, username = NULL, email = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email, hour ORDER BY author_name, hour")
+  query <- paste0(query, " GROUP BY author_name, hour ORDER BY author_name, hour")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -80,16 +70,14 @@ get_time_patterns <- function(conn, username = NULL, email = NULL) {
 #' Часовое распределение с процентами
 #' @param conn Подключение к базе данных DuckDB
 #' @param username Никнейм разработчика (опционально)
-#' @param email Email разработчика (опционально)
 #' @return data.frame с результатами анализа
-get_hourly_distribution <- function(conn, username = NULL, email = NULL) {
+get_hourly_distribution <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         CAST(SUBSTR(date, 12, 2) AS INTEGER) as hour,
         COUNT(*) as commits,
-        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY author_name, author_email), 2) as percentage
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY author_name), 2) as percentage
     FROM git_commit_history
   "
   
@@ -97,15 +85,12 @@ get_hourly_distribution <- function(conn, username = NULL, email = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email, hour ORDER BY author_name, hour")
+  query <- paste0(query, " GROUP BY author_name, hour ORDER BY author_name, hour")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -113,13 +98,11 @@ get_hourly_distribution <- function(conn, username = NULL, email = NULL) {
 #' Анализ активности по дням недели
 #' @param conn Подключение к базе данных DuckDB
 #' @param username Никнейм разработчика (опционально)
-#' @param email Email разработчика (опционально)
 #' @return data.frame с результатами анализа
-get_weekday_patterns <- function(conn, username = NULL, email = NULL) {
+get_weekday_patterns <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         CASE CAST(strftime('%w', CAST(SUBSTR(date, 1, 10) AS DATE)) AS INTEGER)
             WHEN 0 THEN 'Воскресенье'
             WHEN 1 THEN 'Понедельник'
@@ -130,7 +113,7 @@ get_weekday_patterns <- function(conn, username = NULL, email = NULL) {
             WHEN 6 THEN 'Суббота'
         END as weekday,
         COUNT(*) as commits,
-        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY author_name, author_email), 2) as percentage
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY author_name), 2) as percentage
     FROM git_commit_history
   "
   
@@ -138,15 +121,12 @@ get_weekday_patterns <- function(conn, username = NULL, email = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email, weekday ORDER BY author_name, commits DESC")
+  query <- paste0(query, " GROUP BY author_name, weekday ORDER BY author_name, commits DESC")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -154,13 +134,11 @@ get_weekday_patterns <- function(conn, username = NULL, email = NULL) {
 #' Анализ работы в выходные
 #' @param conn Подключение к базе данных DuckDB
 #' @param username Никнейм разработчика (опционально)
-#' @param email Email разработчика (опционально)
 #' @return data.frame с результатами анализа
-get_weekend_analysis <- function(conn, username = NULL, email = NULL) {
+get_weekend_analysis <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         COUNT(*) as total_commits,
         SUM(CASE 
             WHEN CAST(strftime('%w', CAST(SUBSTR(date, 1, 10) AS DATE)) AS INTEGER) IN (0, 6)
@@ -175,15 +153,12 @@ get_weekend_analysis <- function(conn, username = NULL, email = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email HAVING total_commits > 5 ORDER BY weekend_percentage DESC")
+  query <- paste0(query, " GROUP BY author_name HAVING total_commits > 5 ORDER BY weekend_percentage DESC")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -195,13 +170,11 @@ get_weekend_analysis <- function(conn, username = NULL, email = NULL) {
 #' Анализ объема изменений
 #' @param conn Подключение к базе данных DuckDB
 #' @param username Никнейм разработчика (опционально)
-#' @param email Email разработчика (опционально)
 #' @return data.frame с результатами анализа
-get_change_volume <- function(conn, username = NULL, email = NULL) {
+get_change_volume <- function(conn, username = NULL) {
   query <- "
     SELECT 
         c.author_name,
-        c.author_email,
         COUNT(DISTINCT c.commit) as commits,
         SUM(d.count_add) as total_lines_added,
         SUM(d.count_del) as total_lines_deleted,
@@ -215,29 +188,24 @@ get_change_volume <- function(conn, username = NULL, email = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY c.author_name, c.author_email ORDER BY commits DESC")
+  query <- paste0(query, " GROUP BY c.author_name ORDER BY commits DESC")
   
   DBI::dbGetQuery(conn, query)
 }
 
 #' Анализ продуктивности (коммиты и изменения по дням)
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с ежедневной статистикой
-get_productivity_daily <- function(conn, email = NULL, username = NULL) {
+get_productivity_daily <- function(conn, username = NULL) {
   query <- "
     SELECT 
         c.author_name,
-        c.author_email,
         SUBSTR(c.date, 1, 10) as commit_date,
         COUNT(DISTINCT c.commit) as commits_per_day,
         SUM(d.count_add) as lines_added_per_day,
@@ -252,30 +220,25 @@ get_productivity_daily <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY c.author_name, c.author_email, commit_date ORDER BY commit_date")
+  query <- paste0(query, " GROUP BY c.author_name, commit_date ORDER BY commit_date")
   
   DBI::dbGetQuery(conn, query)
 }
 
 #' Анализ размера коммитов (классификация)
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с классификацией коммитов
-get_commit_size_analysis <- function(conn, email = NULL, username = NULL) {
+get_commit_size_analysis <- function(conn, username = NULL) {
   query <- "
     WITH commit_sizes AS (
       SELECT 
           c.author_name,
-          c.author_email,
           c.commit,
           (SUM(d.count_add) + SUM(d.count_del)) as total_changes
       FROM git_commit_history c
@@ -286,20 +249,16 @@ get_commit_size_analysis <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
   query <- paste0(query, "
-      GROUP BY c.author_name, c.author_email, c.commit
+      GROUP BY c.author_name, c.commit
     )
     SELECT 
         author_name,
-        author_email,
         CASE 
             WHEN total_changes <= 10 THEN 'очень маленький (1-10)'
             WHEN total_changes <= 50 THEN 'маленький (11-50)'
@@ -308,9 +267,9 @@ get_commit_size_analysis <- function(conn, email = NULL, username = NULL) {
             ELSE 'очень большой (500+)'
         END as commit_size_category,
         COUNT(*) as commits_count,
-        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY author_name, author_email), 2) as percentage
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY author_name), 2) as percentage
     FROM commit_sizes
-    GROUP BY author_name, author_email, commit_size_category
+    GROUP BY author_name, commit_size_category
     ORDER BY author_name, commits_count DESC
   ")
   
@@ -319,14 +278,12 @@ get_commit_size_analysis <- function(conn, email = NULL, username = NULL) {
 
 #' Анализ стабильности (соотношение добавлений/удалений)
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с метриками стабильности
-get_stability_metrics <- function(conn, email = NULL, username = NULL) {
+get_stability_metrics <- function(conn, username = NULL) {
   query <- "
     SELECT 
         c.author_name,
-        c.author_email,
         COUNT(DISTINCT c.commit) as total_commits,
         SUM(d.count_add) as total_added,
         SUM(d.count_del) as total_deleted,
@@ -340,15 +297,12 @@ get_stability_metrics <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY c.author_name, c.author_email ORDER BY total_commits DESC")
+  query <- paste0(query, " GROUP BY c.author_name ORDER BY total_commits DESC")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -359,20 +313,18 @@ get_stability_metrics <- function(conn, email = NULL, username = NULL) {
 
 #' Предпочитаемые языки программирования
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с статистикой по расширениям файлов
-get_preferred_languages <- function(conn, email = NULL, username = NULL) {
+get_preferred_languages <- function(conn, username = NULL) {
   query <- "
     SELECT 
         c.author_name,
-        c.author_email,
         d.file_extension,
         COUNT(*) as changes,
         SUM(d.count_add) as lines_added,
         SUM(d.count_del) as lines_deleted,
         COUNT(DISTINCT d.src_file) as files_affected,
-        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY c.author_name, c.author_email), 2) as percentage
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY c.author_name), 2) as percentage
     FROM git_commit_history c
     JOIN git_diff d ON c.commit = d.commit
     WHERE d.file_extension != '' AND d.file_extension IS NOT NULL
@@ -382,29 +334,24 @@ get_preferred_languages <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " AND ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY c.author_name, c.author_email, d.file_extension ORDER BY c.author_name, changes DESC")
+  query <- paste0(query, " GROUP BY c.author_name, d.file_extension ORDER BY c.author_name, changes DESC")
   
   DBI::dbGetQuery(conn, query)
 }
 
 #' Анализ работы с конкретными файлами/директориями
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с частотой изменений файлов
-get_file_change_frequency <- function(conn, email = NULL, username = NULL) {
+get_file_change_frequency <- function(conn, username = NULL) {
   query <- "
     SELECT 
         c.author_name,
-        c.author_email,
         d.src_file,
         d.file_extension,
         COUNT(*) as change_count,
@@ -418,15 +365,12 @@ get_file_change_frequency <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY c.author_name, c.author_email, d.src_file, d.file_extension ORDER BY change_count DESC LIMIT 20")
+  query <- paste0(query, " GROUP BY c.author_name, d.src_file, d.file_extension ORDER BY change_count DESC LIMIT 20")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -437,14 +381,12 @@ get_file_change_frequency <- function(conn, email = NULL, username = NULL) {
 
 #' Работа с чувствительными файлами (безопасность)
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с анализом чувствительных изменений
-get_sensitive_files_analysis <- function(conn, email = NULL, username = NULL) {
+get_sensitive_files_analysis <- function(conn, username = NULL) {
   query <- "
     SELECT 
         c.author_name,
-        c.author_email,
         c.date,
         d.src_file,
         d.dst_file,
@@ -459,9 +401,6 @@ get_sensitive_files_analysis <- function(conn, email = NULL, username = NULL) {
   conditions <- c()
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
-  }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
   }
   
   if (length(conditions) > 0) {
@@ -481,22 +420,21 @@ get_anomaly_detection <- function(conn, threshold_hour = 22) {
   query <- "
     WITH hourly_stats AS (
       SELECT 
-          author_email,
+          author_name,
           AVG(commits_per_hour) as avg_commits,
           STDDEV(commits_per_hour) as std_commits
       FROM (
           SELECT 
-              author_email,
+              author_name,
               CAST(SUBSTR(date, 12, 2) AS INTEGER) as hour,
               COUNT(*) as commits_per_hour
           FROM git_commit_history
-          GROUP BY author_email, hour
+          GROUP BY author_name, hour
       )
-      GROUP BY author_email
+      GROUP BY author_name
     )
     SELECT 
         c.author_name,
-        c.author_email,
         c.date,
         CAST(SUBSTR(c.date, 12, 2) AS INTEGER) as hour,
         CASE 
@@ -522,14 +460,12 @@ get_anomaly_detection <- function(conn, threshold_hour = 22) {
 
 #' Самые продуктивные дни
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с топ днями
-get_most_productive_days <- function(conn, email = NULL, username = NULL) {
+get_most_productive_days <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         SUBSTR(date, 1, 10) as day,
         COUNT(*) as commits,
         SUM(d.count_add) as lines_added
@@ -541,42 +477,34 @@ get_most_productive_days <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email, day ORDER BY commits DESC LIMIT 10")
+  query <- paste0(query, " GROUP BY author_name, day ORDER BY commits DESC LIMIT 10")
   
   DBI::dbGetQuery(conn, query)
 }
 
 #' Анализ перерывов в работе
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с анализом перерывов
-get_work_breaks <- function(conn, email = NULL, username = NULL) {
+get_work_breaks <- function(conn, username = NULL) {
   query <- "
     WITH commit_dates AS (
       SELECT 
           author_name,
-          author_email,
           SUBSTR(date, 1, 10) as commit_date,
-          ROW_NUMBER() OVER (PARTITION BY author_email ORDER BY SUBSTR(date, 1, 10)) as rn
+          ROW_NUMBER() OVER (PARTITION BY author_name ORDER BY SUBSTR(date, 1, 10)) as rn
       FROM git_commit_history
-      GROUP BY author_name, author_email, SUBSTR(date, 1, 10)
+      GROUP BY author_name, SUBSTR(date, 1, 10)
   "
   
   conditions <- c()
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("author_name LIKE '%%%s%%'", username))
-  }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("author_email = '%s'", email))
   }
   
   if (length(conditions) > 0) {
@@ -587,12 +515,11 @@ get_work_breaks <- function(conn, email = NULL, username = NULL) {
     )
     SELECT 
         c1.author_name,
-        c1.author_email,
         c1.commit_date as start_break,
         c2.commit_date as end_break,
         JULIANDAY(c2.commit_date) - JULIANDAY(c1.commit_date) as break_days
     FROM commit_dates c1
-    JOIN commit_dates c2 ON c1.author_email = c2.author_email AND c2.rn = c1.rn + 1
+    JOIN commit_dates c2 ON c1.author_name = c2.author_name AND c2.rn = c1.rn + 1
     WHERE JULIANDAY(c2.commit_date) - JULIANDAY(c1.commit_date) > 7
     ORDER BY break_days DESC
   ")
@@ -602,14 +529,12 @@ get_work_breaks <- function(conn, email = NULL, username = NULL) {
 
 #' Тренды активности по месяцам
 #' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (опционально)
 #' @param username Никнейм разработчика (опционально)
 #' @return data.frame с месячными трендами
-get_monthly_trends <- function(conn, email = NULL, username = NULL) {
+get_monthly_trends <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        author_email,
         SUBSTR(date, 1, 7) as month,
         COUNT(*) as commits,
         SUM(d.count_add) as lines_added,
@@ -622,15 +547,12 @@ get_monthly_trends <- function(conn, email = NULL, username = NULL) {
   if (!is.null(username)) {
     conditions <- c(conditions, sprintf("c.author_name LIKE '%%%s%%'", username))
   }
-  if (!is.null(email)) {
-    conditions <- c(conditions, sprintf("c.author_email = '%s'", email))
-  }
   
   if (length(conditions) > 0) {
     query <- paste0(query, " WHERE ", paste(conditions, collapse = " AND "))
   }
   
-  query <- paste0(query, " GROUP BY author_name, author_email, month ORDER BY month")
+  query <- paste0(query, " GROUP BY author_name, month ORDER BY month")
   
   DBI::dbGetQuery(conn, query)
 }
@@ -638,35 +560,6 @@ get_monthly_trends <- function(conn, email = NULL, username = NULL) {
 # ============================================================================
 # 6. ФУНКЦИИ ДЛЯ ПОЛНОГО ПРОФИЛЯ
 # ============================================================================
-
-#' Полный профиль разработчика (по email)
-#' @param conn Подключение к базе данных DuckDB
-#' @param email Email разработчика (обязательный)
-#' @return list с результатами анализа
-get_developer_profile_by_email <- function(conn, email) {
-  if (missing(email) || is.null(email)) {
-    stop("Необходимо указать email разработчика")
-  }
-  
-  cat("\n=== ЗАГРУЗКА ПРОФИЛЯ РАЗРАБОТЧИКА ===\n")
-  cat(sprintf("Email: %s\n", email))
-  cat("=====================================\n\n")
-  
-  list(
-    basic_stats = get_developer_stats(conn, email = email),
-    time_patterns = get_time_patterns(conn, email = email),
-    hourly_distribution = get_hourly_distribution(conn, email = email),
-    weekday_patterns = get_weekday_patterns(conn, email = email),
-    weekend_analysis = get_weekend_analysis(conn, email = email),
-    change_volume = get_change_volume(conn, email = email),
-    commit_size = get_commit_size_analysis(conn, email = email),
-    stability = get_stability_metrics(conn, email = email),
-    languages = get_preferred_languages(conn, email = email),
-    sensitive_files = get_sensitive_files_analysis(conn, email = email),
-    productivity_daily = get_productivity_daily(conn, email = email),
-    monthly_trends = get_monthly_trends(conn, email = email)
-  )
-}
 
 #' Полный профиль разработчика (по нику)
 #' @param conn Подключение к базе данных DuckDB
@@ -701,7 +594,7 @@ get_developer_profile_by_username <- function(conn, username) {
 # 7. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
-#' Поиск разработчиков по имени или email
+#' Поиск разработчиков по имени
 #' @param conn Подключение к базе данных DuckDB
 #' @param search_term Поисковый запрос
 #' @return data.frame с найденными разработчиками
@@ -709,14 +602,12 @@ search_developers <- function(conn, search_term) {
   query <- sprintf("
     SELECT DISTINCT
         author_name,
-        author_email,
         COUNT(*) as commits
     FROM git_commit_history
-    WHERE author_name LIKE '%%%s%%' 
-       OR author_email LIKE '%%%s%%'
-    GROUP BY author_name, author_email
+    WHERE author_name LIKE '%%%s%%'
+    GROUP BY author_name
     ORDER BY commits DESC
-  ", search_term, search_term)
+  ", search_term)
   
   DBI::dbGetQuery(conn, query)
 }
@@ -727,7 +618,7 @@ search_developers <- function(conn, search_term) {
 get_summary_stats <- function(conn) {
   query <- "
     SELECT 
-        COUNT(DISTINCT author_email) as total_developers,
+        COUNT(DISTINCT author_name) as total_developers,
         COUNT(DISTINCT commit) as total_commits,
         MIN(date) as first_commit_date,
         MAX(date) as last_commit_date,
@@ -742,10 +633,9 @@ get_summary_stats <- function(conn) {
   top5 <- DBI::dbGetQuery(conn, "
     SELECT 
         author_name,
-        author_email,
         COUNT(*) as commits
     FROM git_commit_history
-    GROUP BY author_name, author_email
+    GROUP BY author_name
     ORDER BY commits DESC
     LIMIT 5
   ")
@@ -765,8 +655,8 @@ export_profile_to_csv <- function(profile, output_dir = "profiles") {
   }
   
   timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-  author_email <- profile$basic_stats$author_email[1]
-  safe_name <- gsub("[^a-zA-Z0-9]", "_", author_email)
+  author_name <- profile$basic_stats$author_name[1]
+  safe_name <- gsub("[^a-zA-Z0-9]", "_", author_name)
   
   for (name in names(profile)) {
     if (is.data.frame(profile[[name]]) && nrow(profile[[name]]) > 0) {

@@ -12,7 +12,6 @@ get_all_anomalies <- function(conn) {
   query_night <- "
     SELECT 
         author_name,
-        author_email,
         date,
         'night_commit' as anomaly_type,
         CAST(SUBSTR(date, 12, 2) AS INTEGER) as hour,
@@ -38,7 +37,6 @@ get_all_anomalies <- function(conn) {
   query_weekend <- "
     SELECT 
         author_name,
-        author_email,
         date,
         'weekend_commit' as anomaly_type,
         NULL as hour,
@@ -66,7 +64,6 @@ get_all_anomalies <- function(conn) {
   query_mismatch <- "
     SELECT 
         author_name,
-        author_email,
         date,
         'author_committer_mismatch' as anomaly_type,
         NULL as hour,
@@ -91,7 +88,6 @@ get_all_anomalies <- function(conn) {
   query_large <- "
     SELECT 
         c.author_name,
-        c.author_email,
         c.date,
         'large_commit' as anomaly_type,
         NULL as hour,
@@ -107,7 +103,7 @@ get_all_anomalies <- function(conn) {
         ('Изменено ' || CAST(SUM(d.count_add + d.count_del) AS VARCHAR) || ' строк') as description
     FROM git_commit_history c
     JOIN git_diff d ON c.commit = d.commit
-    GROUP BY c.author_name, c.author_email, c.date, c.commit
+    GROUP BY c.author_name, c.date, c.commit
     HAVING SUM(d.count_add + d.count_del) > 500
   "
   large <- DBI::dbGetQuery(conn, query_large)
@@ -118,7 +114,6 @@ get_all_anomalies <- function(conn) {
   query_small <- "
     SELECT 
         c.author_name,
-        c.author_email,
         c.date,
         'tiny_commit' as anomaly_type,
         NULL as hour,
@@ -134,7 +129,7 @@ get_all_anomalies <- function(conn) {
         ('Изменено всего ' || CAST(SUM(d.count_add + d.count_del) AS VARCHAR) || ' строк') as description
     FROM git_commit_history c
     JOIN git_diff d ON c.commit = d.commit
-    GROUP BY c.author_name, c.author_email, c.date, c.commit
+    GROUP BY c.author_name, c.date, c.commit
     HAVING SUM(d.count_add + d.count_del) < 5
   "
   small <- DBI::dbGetQuery(conn, query_small)
@@ -145,7 +140,6 @@ get_all_anomalies <- function(conn) {
   query_sensitive <- "
     SELECT 
         c.author_name,
-        c.author_email,
         c.date,
         'sensitive_file' as anomaly_type,
         NULL as hour,
@@ -171,16 +165,14 @@ get_all_anomalies <- function(conn) {
   query_break <- "
     WITH commit_dates AS (
       SELECT 
-          author_email,
           author_name,
           SUBSTR(date, 1, 10) as commit_date,
-          ROW_NUMBER() OVER (PARTITION BY author_email ORDER BY SUBSTR(date, 1, 10)) as rn
+          ROW_NUMBER() OVER (PARTITION BY author_name ORDER BY SUBSTR(date, 1, 10)) as rn
       FROM git_commit_history
-      GROUP BY author_email, author_name, SUBSTR(date, 1, 10)
+      GROUP BY author_name, SUBSTR(date, 1, 10)
     )
     SELECT 
         c1.author_name,
-        c1.author_email,
         c1.commit_date as date,
         'long_break' as anomaly_type,
         NULL as hour,
@@ -195,7 +187,7 @@ get_all_anomalies <- function(conn) {
         NULL as month,
         ('Перерыв ' || CAST((JULIAN(CAST(c2.commit_date AS DATE)) - JULIAN(CAST(c1.commit_date AS DATE))) AS INTEGER) || ' дней') as description
     FROM commit_dates c1
-    JOIN commit_dates c2 ON c1.author_email = c2.author_email AND c2.rn = c1.rn + 1
+    JOIN commit_dates c2 ON c1.author_name = c2.author_name AND c2.rn = c1.rn + 1
     WHERE (JULIAN(CAST(c2.commit_date AS DATE)) - JULIAN(CAST(c1.commit_date AS DATE))) > 7
   "
   long_break <- DBI::dbGetQuery(conn, query_break)
@@ -206,7 +198,6 @@ get_all_anomalies <- function(conn) {
   query_frequent <- "
     SELECT 
         c.author_name,
-        c.author_email,
         c.date,
         'frequent_file_changes' as anomaly_type,
         NULL as hour,
@@ -222,7 +213,7 @@ get_all_anomalies <- function(conn) {
         ('Файл ' || d.src_file || ' изменен много раз') as description
     FROM git_commit_history c
     JOIN git_diff d ON c.commit = d.commit
-    GROUP BY c.author_name, c.author_email, SUBSTR(c.date, 1, 10), d.src_file, c.date
+    GROUP BY c.author_name, SUBSTR(c.date, 1, 10), d.src_file, c.date
     HAVING COUNT(*) > 10
   "
   frequent <- DBI::dbGetQuery(conn, query_frequent)
@@ -233,7 +224,6 @@ get_all_anomalies <- function(conn) {
   query_no_message <- "
     SELECT 
         author_name,
-        author_email,
         date,
         'empty_message' as anomaly_type,
         NULL as hour,
@@ -258,26 +248,25 @@ get_all_anomalies <- function(conn) {
   query_pattern_change <- "
     WITH monthly_stats AS (
       SELECT 
-          author_email,
+          author_name,
           SUBSTR(date, 1, 7) as month,
           COUNT(*) as commits_per_month,
           AVG(CAST(SUBSTR(date, 12, 2) AS INTEGER)) as avg_hour
       FROM git_commit_history
-      GROUP BY author_email, month
+      GROUP BY author_name, month
     ),
     changes AS (
       SELECT 
-          author_email,
+          author_name,
           month,
           commits_per_month,
           avg_hour,
-          LAG(commits_per_month) OVER (PARTITION BY author_email ORDER BY month) as prev_commits,
-          LAG(avg_hour) OVER (PARTITION BY author_email ORDER BY month) as prev_hour
+          LAG(commits_per_month) OVER (PARTITION BY author_name ORDER BY month) as prev_commits,
+          LAG(avg_hour) OVER (PARTITION BY author_name ORDER BY month) as prev_hour
       FROM monthly_stats
     )
     SELECT 
-        NULL as author_name,
-        author_email,
+        author_name,
         NULL as date,
         'pattern_change' as anomaly_type,
         NULL as hour,
@@ -300,7 +289,7 @@ get_all_anomalies <- function(conn) {
   
   if (nrow(result) > 0) {
     result$anomaly_id <- 1:nrow(result)
-    result <- result[order(result$author_email, result$date), ]
+    result <- result[order(result$author_name, result$date), ]
   }
   
   cat(sprintf("\n=== ИТОГО НАЙДЕНО АНОМАЛИЙ: %d ===\n", nrow(result)))
@@ -323,10 +312,10 @@ get_anomaly_stats <- function(anomalies) {
 #' Топ разработчиков по аномалиям
 get_top_anomaly_developers <- function(anomalies, n = 5) {
   if (nrow(anomalies) == 0) {
-    return(data.frame(author_email = character(), anomaly_count = numeric()))
+    return(data.frame(author_name = character(), anomaly_count = numeric()))
   }
-  top <- aggregate(anomaly_id ~ author_email + author_name, data = anomalies, FUN = length)
-  names(top) <- c("author_email", "author_name", "anomaly_count")
+  top <- aggregate(anomaly_id ~ author_name, data = anomalies, FUN = length)
+  names(top) <- c("author_name", "anomaly_count")
   top <- top[order(-top$anomaly_count), ]
   return(head(top, n))
 }
@@ -350,7 +339,6 @@ export_anomalies_to_csv <- function(anomalies, output_dir = "anomalies") {
   
   cat(sprintf("Сохранены файлы:\n- %s\n- %s\n- %s\n", filename, stats_file, top_file))
 }
-
 
 #' Аномалии для конкретного разработчика
 #' @param conn Подключение к БД
