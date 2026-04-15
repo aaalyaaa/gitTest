@@ -208,6 +208,47 @@ parse_commit <- function(block, repo_id) {
     src_file <- sub("^--- /dev/null", NA_character_, src_file)
     dst_file <- sub("^\\+\\+\\+ b/", "", dst_line)
 
+    file_for_ext <- ifelse(!is.na(dst_file), dst_file, src_file)
+    if (is.na(file_for_ext)) {
+      file_extension <- ""
+    } else {
+      file_name <- basename(file_for_ext)
+
+      special_files <- c(
+        "description" = "description",
+        "namespace" = "namespace",
+        ".rbuildignore" = "rbuildignore",
+        ".rprofile" = "rprofile",
+        ".renviron" = "renviron",
+        "license" = "license",
+        "readme" = "readme",
+        "news" = "news",
+        "changelog" = "changelog",
+        "todo" = "todo",
+        "code_of_conduct" = "code_of_conduct",
+        "contributing" = "contributing",
+        "maintainers" = "maintainers",
+        "security" = "security",
+        ".gitignore" = "gitignore",
+        ".gitattributes" = "gitattributes",
+        ".gitmodules" = "gitmodules",
+        ".dockerignore" = "dockerignore",
+        "dockerfile" = "dockerfile",
+        "makefile" = "makefile",
+        "makevars" = "makevars"
+      )
+
+      file_name_lower <- tolower(file_name)
+
+      if (file_name_lower %in% names(special_files)) {
+        file_extension <- special_files[file_name_lower]
+      } else if (grepl("\\.", file_name)) {
+        file_extension <- tolower(sub(".*\\.", "", file_name))
+      } else {
+        file_extension <- ""
+      }
+    }
+
     hunk_indices <- grep("^@@ ", file_block)
 
     for (idx in hunk_indices) {
@@ -251,6 +292,7 @@ parse_commit <- function(block, repo_id) {
         commit = hash,
         src_file = src_file,
         dst_file = dst_file,
+        file_extension = file_extension,
         start_del = start_del,
         count_del = count_del,
         start_add = start_add,
@@ -309,6 +351,7 @@ init_db <- function(db_path = "git.duckdb") {
       commit VARCHAR(40) NOT NULL,
       src_file VARCHAR,
       dst_file VARCHAR,
+      file_extension VARCHAR,
       start_del INTEGER,
       count_del INTEGER,
       start_add INTEGER,
