@@ -22,7 +22,7 @@ get_developer_stats <- function(conn, username = NULL) {
         COUNT(DISTINCT repo) as repos_count,
         MIN(date) as first_commit,
         MAX(date) as last_commit,
-        COUNT(DISTINCT SUBSTR(date, 1, 10)) as active_days
+        COUNT(DISTINCT SUBSTR(CAST(date AS VARCHAR), 1, 10)) as active_days
     FROM git_commit_history
   "
   
@@ -48,7 +48,7 @@ get_time_patterns <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        CAST(SUBSTR(date, 12, 2) AS INTEGER) as hour,
+        CAST(SUBSTR(CAST(date AS VARCHAR), 12, 2) AS INTEGER) as hour,
         COUNT(*) as commits_count
     FROM git_commit_history
   "
@@ -103,7 +103,7 @@ get_weekday_patterns <- function(conn, username = NULL) {
   query <- "
     SELECT 
         author_name,
-        CASE CAST(strftime('%w', CAST(SUBSTR(date, 1, 10) AS DATE)) AS INTEGER)
+        CASE CAST(strftime('%w', SUBSTR(CAST(date AS VARCHAR), 1, 10 AS DATE)) AS INTEGER)
             WHEN 0 THEN 'Воскресенье'
             WHEN 1 THEN 'Понедельник'
             WHEN 2 THEN 'Вторник'
@@ -181,7 +181,7 @@ get_change_volume <- function(conn, username = NULL) {
         ROUND(AVG(d.count_add), 2) as avg_lines_added,
         ROUND(AVG(d.count_del), 2) as avg_lines_deleted
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -213,7 +213,7 @@ get_productivity_daily <- function(conn, username = NULL) {
         ROUND(AVG(d.count_add), 2) as avg_add_per_commit,
         ROUND(AVG(d.count_del), 2) as avg_del_per_commit
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -242,7 +242,7 @@ get_commit_size_analysis <- function(conn, username = NULL) {
           c.commit,
           (SUM(d.count_add) + SUM(d.count_del)) as total_changes
       FROM git_commit_history c
-      JOIN git_diff d ON c.commit = d.commit
+      JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -290,7 +290,7 @@ get_stability_metrics <- function(conn, username = NULL) {
         ROUND(SUM(d.count_add) / NULLIF(SUM(d.count_del), 0), 2) as add_del_ratio,
         ROUND(SUM(d.count_del) * 100.0 / NULLIF(SUM(d.count_add), 0), 2) as rewrite_percentage
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -326,7 +326,7 @@ get_preferred_languages <- function(conn, username = NULL) {
         COUNT(DISTINCT d.src_file) as files_affected,
         ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY c.author_name), 2) as percentage
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
     WHERE d.file_extension != '' AND d.file_extension IS NOT NULL
   "
   
@@ -358,7 +358,7 @@ get_file_change_frequency <- function(conn, username = NULL) {
         MIN(c.date) as first_change,
         MAX(c.date) as last_change
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -394,7 +394,7 @@ get_sensitive_files_analysis <- function(conn, username = NULL) {
         d.count_add + d.count_del as total_changes,
         d.code
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
     WHERE d.is_sensitive = TRUE
   "
   
@@ -470,7 +470,7 @@ get_most_productive_days <- function(conn, username = NULL) {
         COUNT(*) as commits,
         SUM(d.count_add) as lines_added
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -540,7 +540,7 @@ get_monthly_trends <- function(conn, username = NULL) {
         SUM(d.count_add) as lines_added,
         SUM(d.count_del) as lines_deleted
     FROM git_commit_history c
-    JOIN git_diff d ON c.commit = d.commit
+    JOIN git_file_changes d ON c.commit = d.commit
   "
   
   conditions <- c()
@@ -614,7 +614,7 @@ search_developers <- function(conn, search_term) {
 
 #' Сводная статистика по всем разработчикам
 #' @param conn Подключение к базе данных DuckDB
-#' @return data.frame со сводной статистикой
+#' @return list со сводной статистикой
 get_summary_stats <- function(conn) {
   query <- "
     SELECT 
@@ -622,14 +622,12 @@ get_summary_stats <- function(conn) {
         COUNT(DISTINCT commit) as total_commits,
         MIN(date) as first_commit_date,
         MAX(date) as last_commit_date,
-        COUNT(DISTINCT SUBSTR(date, 1, 10)) as total_active_days,
-        COUNT(DISTINCT repo) as total_repos
+        COUNT(DISTINCT SUBSTR(CAST(date AS VARCHAR), 1, 10)) as total_active_days
     FROM git_commit_history
   "
   
   stats <- DBI::dbGetQuery(conn, query)
   
-  # Топ-5 разработчиков по коммитам
   top5 <- DBI::dbGetQuery(conn, "
     SELECT 
         author_name,

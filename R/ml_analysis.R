@@ -427,7 +427,6 @@ get_activity_seasonality <- function(conn, author_name = NULL) {
     return(git_error("seasonality_error", paste("Ошибка анализа сезонности:", e$message)))
   })
 }
-
 compare_with_team <- function(conn, author_name) {
   tryCatch({
     query_team <- "
