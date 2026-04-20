@@ -1,26 +1,20 @@
+# ml_analysis.R (исправленный)
 library(dplyr)
-library(tidyr)
 library(forecast)
 library(cluster)
-library(randomForest)
-library(factoextra)
 library(ggplot2)
 
 git_error <- function(class, message, ...) {
-  structure(
-    list(message = message, ...),
-    class = c(class, "error", "condition")
-  )
+  structure(list(message = message, ...), class = c(class, "error", "condition"))
 }
 
 optimal_clusters <- function(data, max_clusters = 10) {
   if (nrow(data) < 3) return(2)
   wss <- sapply(1:min(max_clusters, nrow(data)-1), function(k) {
-    kmeans(data, centers = k, nstart = 10, iter.max = 50)$tot.withinss
+    kmeans(data, centers = k, nstart = 10)$tot.withinss
   })
   if (length(wss) < 2) return(2)
   diffs <- diff(wss)
-  if (length(diffs) < 2) return(2)
   elbow <- which.min(diffs[2:length(diffs)]) + 1
   return(min(max(elbow, 2), max_clusters))
 }
@@ -31,90 +25,64 @@ prepare_clustering_data <- function(conn) {
       SELECT 
           c.author_name,
           COUNT(DISTINCT c.commit) as total_commits,
-          COUNT(DISTINCT SUBSTR(CAST(c.date AS VARCHAR), 1, 10)) as active_days,
-          AVG(CAST(SUBSTR(CAST(c.date AS VARCHAR), 12, 2) AS INTEGER)) as avg_commit_hour,
-          SUM(CASE WHEN CAST(SUBSTR(CAST(c.date AS VARCHAR), 12, 2) AS INTEGER) BETWEEN 0 AND 5 
-               THEN 1 ELSE 0 END) as night_commits,
+          COUNT(DISTINCT CAST(c.date AS DATE)) as active_days,
+          AVG(EXTRACT(HOUR FROM c.date)) as avg_commit_hour,
+          SUM(CASE WHEN EXTRACT(HOUR FROM c.date) BETWEEN 0 AND 5 THEN 1 ELSE 0 END) as night_commits,
           SUM(d.count_add) as total_added,
           SUM(d.count_del) as total_deleted,
           AVG(d.count_add) as avg_add_per_commit,
           AVG(d.count_del) as avg_del_per_commit,
           COUNT(DISTINCT d.src_file) as unique_files,
-          SUM(CASE WHEN d.src_file LIKE '%.env%' OR d.src_file LIKE '%.key%' OR d.src_file LIKE '%secret%' OR d.src_file LIKE '%password%' THEN 1 ELSE 0 END) as sensitive_changes
+          SUM(CASE WHEN d.src_file LIKE '%.env%' OR d.src_file LIKE '%.key%' OR d.src_file LIKE '%secret%' THEN 1 ELSE 0 END) as sensitive_changes
       FROM git_commit_history c
       JOIN git_file_changes d ON c.commit = d.commit
       GROUP BY c.author_name
     )
     SELECT * FROM developer_metrics
   "
-  
   df <- DBI::dbGetQuery(conn, query)
-  
-  if (nrow(df) == 0) {
-    return(git_error("no_data_error", "Нет данных для ML анализа"))
-  }
+  if (nrow(df) == 0) return(git_error("no_data_error", "Нет данных для ML анализа"))
   
   df_scaled <- df
-  numeric_cols <- c("total_commits", "active_days", "avg_commit_hour", 
-                    "night_commits", "total_added", "total_deleted", 
-                    "avg_add_per_commit", "avg_del_per_commit",
+  numeric_cols <- c("total_commits", "active_days", "avg_commit_hour", "night_commits",
+                    "total_added", "total_deleted", "avg_add_per_commit", "avg_del_per_commit",
                     "unique_files", "sensitive_changes")
-  
   for (col in numeric_cols) {
-    if (sd(df[[col]], na.rm = TRUE) > 0 && !is.na(sd(df[[col]], na.rm = TRUE))) {
+    if (sd(df[[col]], na.rm = TRUE) > 0) {
       df_scaled[[col]] <- scale(df[[col]])
     } else {
       df_scaled[[col]] <- 0
     }
   }
-  
-  return(list(
-    data = df,
-    scaled = df_scaled,
-    features = numeric_cols
-  ))
+  list(data = df, scaled = df_scaled, features = numeric_cols)
 }
 
 cluster_developers <- function(conn, n_clusters = NULL) {
   tryCatch({
     ml_data <- prepare_clustering_data(conn)
-    if (inherits(ml_data, "error")) {
-      return(ml_data)
-    }
-    
+    if (inherits(ml_data, "error")) return(ml_data)
     dev_count <- nrow(ml_data$data)
-    if (dev_count < 3) {
-      return(git_error("insufficient_data_error", 
-                       sprintf("Невозможно выполнить кластеризацию: разработчиков (%d) меньше 3.", dev_count)))
-    }
+    if (dev_count < 3) return(git_error("insufficient_data_error", "Разработчиков меньше 3"))
     
     df_scaled <- ml_data$scaled[, ml_data$features, drop = FALSE]
     df_scaled <- df_scaled[complete.cases(df_scaled), ]
-    
-    if (nrow(df_scaled) < 3) {
-      return(git_error("insufficient_data_error", "Недостаточно данных после очистки"))
-    }
+    if (nrow(df_scaled) < 3) return(git_error("insufficient_data_error", "Недостаточно данных после очистки"))
     
     if (is.null(n_clusters)) {
       n_clusters <- optimal_clusters(df_scaled, max_clusters = min(5, dev_count - 1))
     }
-    
     n_clusters <- min(n_clusters, nrow(df_scaled) - 1)
     if (n_clusters < 2) n_clusters <- 2
     
     set.seed(123)
     kmeans_result <- kmeans(df_scaled, centers = n_clusters, nstart = 25)
-    
     ml_data$data$cluster <- kmeans_result$cluster
     
     cluster_profiles <- aggregate(ml_data$data[, ml_data$features], 
-                                  by = list(cluster = ml_data$data$cluster), 
-                                  FUN = mean)
-    
+                                  by = list(cluster = ml_data$data$cluster), FUN = mean)
     cluster_names <- c()
     for (i in 1:n_clusters) {
       profile <- cluster_profiles[i, ]
-      
       if (profile$total_commits > median(ml_data$data$total_commits)) {
         if (profile$avg_commit_hour < 8 || profile$avg_commit_hour > 22) {
           cluster_names <- c(cluster_names, "Ночной трудоголик")
@@ -131,407 +99,203 @@ cluster_developers <- function(conn, n_clusters = NULL) {
         }
       }
     }
-    
     ml_data$data$cluster_type <- cluster_names[kmeans_result$cluster]
     cluster_profiles$cluster_type <- cluster_names
-    
     cluster_stats <- as.data.frame(table(ml_data$data$cluster_type))
     names(cluster_stats) <- c("cluster_type", "developers_count")
     
-    return(list(
-      clustering = kmeans_result,
-      data = ml_data$data,
-      cluster_profiles = cluster_profiles,
-      cluster_stats = cluster_stats,
-      features = ml_data$features,
-      n_clusters = n_clusters
-    ))
-    
-  }, error = function(e) {
-    return(git_error("clustering_error", paste("Ошибка кластеризации:", e$message)))
-  })
-}
-
-cluster_commits <- function(conn, n_clusters = NULL) {
-  tryCatch({
-    query <- "
-      SELECT 
-          c.commit,
-          c.author_name,
-          COUNT(*) as files_changed,
-          SUM(d.count_add) as lines_added,
-          SUM(d.count_del) as lines_deleted,
-          SUM(d.count_add + d.count_del) as total_changes
-      FROM git_commit_history c
-      JOIN git_file_changes d ON c.commit = d.commit
-      GROUP BY c.commit, c.author_name
-    "
-    
-    df <- DBI::dbGetQuery(conn, query)
-    
-    if (nrow(df) < 5) {
-      return(git_error("insufficient_data_error", 
-                       sprintf("Невозможно выполнить кластеризацию коммитов: коммитов (%d) меньше 5.", nrow(df))))
-    }
-    
-    features <- df[, c("files_changed", "lines_added", "lines_deleted", "total_changes")]
-    features_scaled <- scale(features)
-    features_scaled <- features_scaled[complete.cases(features_scaled), ]
-    
-    if (is.null(n_clusters)) {
-      n_clusters <- optimal_clusters(features_scaled, max_clusters = min(5, nrow(df) - 1))
-    }
-    
-    n_clusters <- min(n_clusters, nrow(df) - 1)
-    if (n_clusters < 2) n_clusters <- 2
-    
-    set.seed(123)
-    clusters <- kmeans(features_scaled, centers = n_clusters, nstart = 10)
-    
-    df$commit_cluster <- clusters$cluster
-    
-    cluster_summary <- df %>%
-      group_by(commit_cluster) %>%
-      summarise(
-        avg_files = mean(files_changed),
-        avg_lines = mean(total_changes),
-        тип = case_when(
-          mean(total_changes) < 50 ~ "маленький коммит",
-          mean(total_changes) < 200 ~ "средний коммит",
-          TRUE ~ "большой коммит"
-        ),
-        count = n()
-      )
-    
-    return(list(
-      commits_with_clusters = df,
-      cluster_summary = cluster_summary,
-      n_clusters = n_clusters
-    ))
-    
-  }, error = function(e) {
-    return(git_error("clustering_error", paste("Ошибка кластеризации коммитов:", e$message)))
-  })
-}
-
-classify_commit_type_by_metrics <- function(conn) {
-  tryCatch({
-    query <- "
-      SELECT 
-          c.commit,
-          c.author_name,
-          COUNT(*) as files_changed,
-          SUM(d.count_add) as lines_added,
-          SUM(d.count_del) as lines_deleted,
-          SUM(d.count_add + d.count_del) as total_changes,
-          SUM(CASE WHEN d.src_file LIKE '%.env%' OR d.src_file LIKE '%.key%' OR d.src_file LIKE '%secret%' OR d.src_file LIKE '%password%' THEN 1 ELSE 0 END) as sensitive_count,
-          SUM(CASE WHEN d.src_file IS NULL THEN 1 ELSE 0 END) as new_files_count,
-          SUM(CASE WHEN d.dst_file IS NULL THEN 1 ELSE 0 END) as deleted_files_count
-      FROM git_commit_history c
-      JOIN git_file_changes d ON c.commit = d.commit
-      GROUP BY c.commit, c.author_name
-    "
-    
-    df <- DBI::dbGetQuery(conn, query)
-    
-    if (nrow(df) < 5) {
-      return(git_error("insufficient_data_error", 
-                       sprintf("Невозможно классифицировать коммиты: коммитов (%d) меньше 5.", nrow(df))))
-    }
-    
-    df$predicted_type <- case_when(
-      df$files_changed > 10 & df$total_changes > 500 ~ "крупное_изменение",
-      df$new_files_count > 0 & df$deleted_files_count == 0 ~ "добавление_файлов",
-      df$deleted_files_count > 0 & df$new_files_count == 0 ~ "удаление_файлов",
-      df$sensitive_count > 0 ~ "чувствительное_изменение",
-      df$files_changed == 1 & df$total_changes < 50 ~ "точечная_правка",
-      df$lines_added / (df$lines_deleted + 1) > 5 ~ "добавление_кода",
-      df$lines_deleted / (df$lines_added + 1) > 3 ~ "удаление_кода",
-      TRUE ~ "обычный_коммит"
-    )
-    
-    type_stats <- df %>%
-      group_by(predicted_type) %>%
-      summarise(count = n(), percentage = round(100 * n() / nrow(df), 1))
-    
-    return(list(
-      commits_with_types = df,
-      type_stats = type_stats
-    ))
-    
-  }, error = function(e) {
-    return(git_error("classification_error", paste("Ошибка классификации:", e$message)))
-  })
+    list(clustering = kmeans_result, data = ml_data$data,
+         cluster_profiles = cluster_profiles, cluster_stats = cluster_stats,
+         features = ml_data$features, n_clusters = n_clusters)
+  }, error = function(e) git_error("clustering_error", paste("Ошибка кластеризации:", e$message)))
 }
 
 forecast_developer_activity <- function(conn, author_name, forecast_days = 7) {
   tryCatch({
     query <- sprintf("
-      SELECT 
-          SUBSTR(CAST(c.date AS VARCHAR), 1, 10) as commit_date,
-          COUNT(*) as commits
-      FROM git_commit_history c
-      WHERE c.author_name = '%s'
-      GROUP BY commit_date
-      ORDER BY commit_date
+      SELECT CAST(date AS DATE) as commit_date, COUNT(*) as commits
+      FROM git_commit_history
+      WHERE author_name = '%s'
+      GROUP BY commit_date ORDER BY commit_date
     ", author_name)
-    
     df <- DBI::dbGetQuery(conn, query)
-    
     if (nrow(df) < 3) {
-      return(git_error("insufficient_data_error", 
-                       sprintf("Невозможно построить прогноз для %s: дней с активностью (%d) меньше 3.", author_name, nrow(df))))
+      return(git_error("insufficient_data_error", paste("Недостаточно данных для", author_name)))
     }
-    
     ts_data <- ts(df$commits, frequency = 1)
-    
-    fit <- tryCatch({
-      auto.arima(ts_data, seasonal = FALSE)
-    }, error = function(e) {
-      tryCatch({
-        arima(ts_data, order = c(1,0,1))
-      }, error = function(e2) NULL)
-    })
-    
+    fit <- tryCatch(auto.arima(ts_data, seasonal = FALSE), error = function(e) NULL)
     if (is.null(fit)) {
-      return(git_error("model_error", "Не удалось построить модель ARIMA. Данных слишком мало или они нестационарны."))
+      # Fallback: простая экспоненциальная модель
+      fit <- tryCatch(ets(ts_data), error = function(e) NULL)
     }
-    
-    forecast_result <- forecast(fit, h = forecast_days)
-    
+    if (is.null(fit)) {
+      # Простейший прогноз – среднее
+      forecast_mean <- rep(mean(df$commits), forecast_days)
+      forecast_obj <- list(mean = forecast_mean, lower = matrix(forecast_mean - sd(df$commits), ncol=2),
+                           upper = matrix(forecast_mean + sd(df$commits), ncol=2))
+      class(forecast_obj) <- "forecast"
+    } else {
+      forecast_obj <- forecast(fit, h = forecast_days)
+    }
     plot_data <- data.frame(
       day = 1:forecast_days,
-      forecast = as.numeric(forecast_result$mean),
-      lower = as.numeric(forecast_result$lower[, 2]),
-      upper = as.numeric(forecast_result$upper[, 2])
+      forecast = as.numeric(forecast_obj$mean),
+      lower = as.numeric(forecast_obj$lower[, 2]),
+      upper = as.numeric(forecast_obj$upper[, 2])
     )
-    
-    expected <- round(sum(forecast_result$mean, na.rm = TRUE), 1)
-    
-    return(list(
-      author = author_name,
-      historical = df,
-      forecast = forecast_result,
-      expected_commits_next_week = expected,
-      plot_data = plot_data
-    ))
-    
-  }, error = function(e) {
-    return(git_error("forecast_error", paste("Ошибка прогнозирования:", e$message)))
-  })
+    expected <- round(sum(forecast_obj$mean, na.rm = TRUE), 1)
+    list(author = author_name, historical = df, forecast = forecast_obj,
+         expected_commits_next_week = expected, plot_data = plot_data)
+  }, error = function(e) git_error("forecast_error", paste("Ошибка прогнозирования:", e$message)))
 }
 
 plot_forecast <- function(forecast_result) {
   if (inherits(forecast_result, "error")) {
-    cat("⚠️", forecast_result$message, "\n")
-    return(invisible(NULL))
+    cat("⚠️", forecast_result$message, "\n"); return(invisible(NULL))
   }
-  
-  if (is.null(forecast_result$plot_data) || nrow(forecast_result$plot_data) == 0) {
-    cat("Нет данных для построения графика\n")
-    return(invisible(NULL))
-  }
-  
   plot_data <- forecast_result$plot_data
-  
-  if (all(is.na(plot_data$forecast)) || sum(plot_data$forecast, na.rm = TRUE) == 0) {
-    cat("Нет значимых данных для прогноза\n")
-    return(invisible(NULL))
-  }
-  
-  y_max <- max(plot_data$upper, na.rm = TRUE) + 1
-  if (is.infinite(y_max) || is.na(y_max)) y_max <- max(plot_data$forecast, na.rm = TRUE) + 1
-  
-  plot(plot_data$day, plot_data$forecast, 
-       type = "b", 
-       col = "blue",
-       pch = 19,
-       main = paste("Прогноз активности для", forecast_result$author),
-       xlab = "Дни вперед", 
-       ylab = "Количество коммитов",
-       ylim = c(0, y_max))
-  
-  if (!all(is.na(plot_data$lower)) && !all(is.na(plot_data$upper))) {
-    lines(plot_data$day, plot_data$lower, col = "red", lty = 2)
-    lines(plot_data$day, plot_data$upper, col = "red", lty = 2)
-    legend("topright", legend = c("Прогноз", "95% доверительный интервал"), 
-           col = c("blue", "red"), lty = c(1, 2), cex = 0.8)
-  }
-  
-  mtext(paste("Ожидается коммитов на неделе:", forecast_result$expected_commits_next_week), 
-        side = 3, line = 0.5, cex = 0.9)
-}
-
-plot_forecast_ggplot <- function(forecast_result) {
-  if (inherits(forecast_result, "error")) {
-    cat("⚠️", forecast_result$message, "\n")
-    return(invisible(NULL))
-  }
-  
-  if (is.null(forecast_result$plot_data) || nrow(forecast_result$plot_data) == 0) {
-    cat("Нет данных для построения графика\n")
-    return(invisible(NULL))
-  }
-  
-  plot_data <- forecast_result$plot_data
-  
   if (all(is.na(plot_data$forecast))) {
-    cat("Все значения прогноза - NA\n")
-    return(invisible(NULL))
+    cat("Нет данных для прогноза\n"); return(invisible(NULL))
   }
-  
-  p <- ggplot(plot_data, aes(x = day)) +
-    geom_ribbon(aes(ymin = lower, ymax = upper), fill = "grey70", alpha = 0.5) +
-    geom_line(aes(y = forecast), color = "blue", size = 1) +
-    geom_point(aes(y = forecast), color = "blue", size = 2) +
-    labs(title = paste("Прогноз активности для", forecast_result$author),
-         subtitle = paste("Ожидается коммитов на неделе:", forecast_result$expected_commits_next_week),
-         x = "Дни вперед", 
-         y = "Количество коммитов") +
-    theme_minimal() +
-    ylim(0, max(plot_data$upper, na.rm = TRUE) + 1)
-  
-  print(p)
+  y_max <- max(plot_data$upper, na.rm = TRUE) + 1
+  plot(plot_data$day, plot_data$forecast, type = "b", col = "blue", pch = 19,
+       main = paste("Прогноз для", forecast_result$author),
+       xlab = "Дни", ylab = "Коммиты", ylim = c(0, y_max))
+  lines(plot_data$day, plot_data$lower, col = "red", lty = 2)
+  lines(plot_data$day, plot_data$upper, col = "red", lty = 2)
+  legend("topright", legend = c("Прогноз", "95% ДИ"), col = c("blue", "red"), lty = c(1,2))
+  mtext(paste("Ожидается:", forecast_result$expected_commits_next_week, "коммитов"), side = 3)
 }
 
 get_activity_seasonality <- function(conn, author_name = NULL) {
   tryCatch({
-    where_clause <- if (!is.null(author_name)) {
-      sprintf("WHERE c.author_name = '%s'", author_name)
-    } else ""
-    
-    query_hour <- sprintf("
-      SELECT 
-          CAST(SUBSTR(CAST(c.date AS VARCHAR), 12, 2) AS INTEGER) as hour,
-          COUNT(*) as commits
-      FROM git_commit_history c
-      %s
-      GROUP BY hour
-      ORDER BY hour
-    ", where_clause)
-    
-    hour_data <- DBI::dbGetQuery(conn, query_hour)
-    
-    if (nrow(hour_data) == 0) {
-      return(git_error("no_data_error", "Нет данных для анализа сезонности"))
-    }
-    
+    where <- if (!is.null(author_name)) sprintf("WHERE author_name = '%s'", author_name) else ""
+    query <- sprintf("
+      SELECT EXTRACT(HOUR FROM date) as hour, COUNT(*) as commits
+      FROM git_commit_history %s
+      GROUP BY hour ORDER BY hour
+    ", where)
+    hour_data <- DBI::dbGetQuery(conn, query)
+    if (nrow(hour_data) == 0) return(git_error("no_data_error", "Нет данных"))
     peak_hours <- hour_data[order(-hour_data$commits), ][1:3, ]
-    
-    return(list(
-      by_hour = hour_data,
-      peak_hours = peak_hours
-    ))
-    
-  }, error = function(e) {
-    return(git_error("seasonality_error", paste("Ошибка анализа сезонности:", e$message)))
-  })
+    list(by_hour = hour_data, peak_hours = peak_hours)
+  }, error = function(e) git_error("seasonality_error", e$message))
 }
+
 compare_with_team <- function(conn, author_name) {
   tryCatch({
-    query_team <- "
-      SELECT 
-          COUNT(DISTINCT c.commit) as commits,
-          AVG(d.count_add + d.count_del) as avg_commit_size,
-          COUNT(DISTINCT SUBSTR(CAST(c.date AS VARCHAR), 1, 10)) as active_days
-      FROM git_commit_history c
-      JOIN git_file_changes d ON c.commit = d.commit
-    "
-    
-    query_user <- sprintf("
-      SELECT 
-          COUNT(DISTINCT c.commit) as commits,
-          AVG(d.count_add + d.count_del) as avg_commit_size,
-          COUNT(DISTINCT SUBSTR(CAST(c.date AS VARCHAR), 1, 10)) as active_days
-      FROM git_commit_history c
-      JOIN git_file_changes d ON c.commit = d.commit
-      WHERE c.author_name = '%s'
-    ", author_name)
-    
-    team <- DBI::dbGetQuery(conn, query_team)
-    user <- DBI::dbGetQuery(conn, query_user)
-    
-    if (nrow(user) == 0) {
-      return(git_error("no_developer_error", sprintf("Разработчик '%s' не найден", author_name)))
-    }
-    
-    if (is.na(team$commits[1]) || team$commits[1] == 0) {
-      return(git_error("insufficient_team_error", "Недостаточно данных для сравнения с командой"))
-    }
-    
-    comparison <- data.frame(
+    team <- DBI::dbGetQuery(conn, "
+      SELECT AVG(total_commits) as avg_commits, AVG(avg_commit_size) as avg_size, AVG(active_days) as avg_days
+      FROM developer_metrics
+    ")
+    user <- DBI::dbGetQuery(conn, sprintf("
+      SELECT total_commits, avg_commit_size, active_days FROM developer_metrics WHERE author_name = '%s'
+    ", author_name))
+    if (nrow(user) == 0) return(git_error("no_developer_error", "Разработчик не найден"))
+    data.frame(
       metric = c("Коммитов", "Средний размер", "Активных дней"),
       developer = as.numeric(user[1, ]),
       team_avg = as.numeric(team[1, ]),
-      difference_percent = round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1)
+      diff_percent = round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1),
+      status = ifelse(abs(round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1)) > 20,
+                      ifelse(round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1) > 0,
+                             "выше среднего", "ниже среднего"), "в норме")
     )
-    
-    comparison$status <- ifelse(comparison$difference_percent > 20, "выше среднего",
-                                ifelse(comparison$difference_percent < -20, "ниже среднего", "в норме"))
-    
-    return(comparison)
-    
-  }, error = function(e) {
-    return(git_error("comparison_error", paste("Ошибка сравнения:", e$message)))
-  })
+  }, error = function(e) git_error("comparison_error", e$message))
 }
 
 get_activity_trends <- function(conn, author_name = NULL) {
   tryCatch({
-    where_clause <- if (!is.null(author_name)) {
-      sprintf("WHERE c.author_name = '%s'", author_name)
-    } else ""
-    
+    where <- if (!is.null(author_name)) sprintf("WHERE author_name = '%s'", author_name) else ""
     query <- sprintf("
-      SELECT 
-          SUBSTR(CAST(c.date AS VARCHAR), 1, 7) as month,
-          COUNT(DISTINCT c.commit) as commits,
-          AVG(d.count_add + d.count_del) as avg_size,
-          COUNT(DISTINCT SUBSTR(CAST(c.date AS VARCHAR), 1, 10)) as active_days
-      FROM git_commit_history c
-      JOIN git_file_changes d ON c.commit = d.commit
-      %s
-      GROUP BY month
-      ORDER BY month
-    ", where_clause)
-    
+      SELECT DATE_TRUNC('month', date) as month, COUNT(*) as commits
+      FROM git_commit_history %s
+      GROUP BY month ORDER BY month
+    ", where)
     df <- DBI::dbGetQuery(conn, query)
-    
-    if (nrow(df) < 2) {
-      return(git_error("insufficient_data_error", 
-                       sprintf("Невозможно построить тренд: месяцев (%d) меньше 2.", nrow(df))))
-    }
-    
-    df$trend_commits <- c(NA, diff(df$commits))
-    df$trend_direction <- ifelse(df$trend_commits > 0, "рост",
-                                 ifelse(df$trend_commits < 0, "падение", "стабильно"))
-    
-    overall_trend <- ifelse(coef(lm(commits ~ seq_len(nrow(df)), data = df))[2] > 0, 
-                            "общий тренд: РОСТ", "общий тренд: ПАДЕНИЕ")
-    
-    return(list(
-      monthly_data = df,
-      overall_trend = overall_trend,
-      best_month = df[which.max(df$commits), ],
-      worst_month = df[which.min(df$commits), ]
-    ))
-    
-  }, error = function(e) {
-    return(git_error("trend_error", paste("Ошибка анализа трендов:", e$message)))
-  })
+    if (nrow(df) < 2) return(git_error("insufficient_data_error", "Недостаточно месяцев"))
+    df$trend <- c(NA, diff(df$commits))
+    df$direction <- ifelse(df$trend > 0, "рост", ifelse(df$trend < 0, "падение", "стабильно"))
+    overall <- ifelse(coef(lm(commits ~ seq_len(nrow(df)), data = df))[2] > 0, "общий тренд: РОСТ", "общий тренд: ПАДЕНИЕ")
+    list(monthly_data = df, overall_trend = overall,
+         best_month = df[which.max(df$commits), ],
+         worst_month = df[which.min(df$commits), ])
+  }, error = function(e) git_error("trend_error", e$message))
 }
 
-run_anomalies_from_file <- function(conn, username = NULL) {
-  if (!file.exists("R/anomalies_detection.R")) {
-    return(git_error("file_not_found", "Файл anomalies_detection.R не найден"))
+# ============================================================================
+# 6. ОБНАРУЖЕНИЕ АНОМАЛИЙ С ПОМОЩЬЮ ISOLATION FOREST
+# ============================================================================
+
+prepare_anomaly_features <- function(conn, author_name = NULL) {
+  where_clause <- if (!is.null(author_name)) {
+    sprintf("WHERE c.author_name = '%s'", author_name)
+  } else ""
+  
+  query <- sprintf("
+    SELECT 
+        c.commit,
+        c.author_name,
+        EXTRACT(HOUR FROM c.date) AS hour,
+        EXTRACT(DOW FROM c.date) AS dow,
+        COUNT(DISTINCT d.src_file) AS n_files,
+        SUM(d.count_add + d.count_del) AS commit_size,
+        SUM(d.count_add) / NULLIF(SUM(d.count_del), 0) AS add_del_ratio
+    FROM git_commit_history c
+    JOIN git_file_changes d ON c.commit = d.commit
+    %s
+    GROUP BY c.commit, c.author_name, c.date
+  ", where_clause)
+  
+  df <- DBI::dbGetQuery(conn, query)
+  df$add_del_ratio[is.infinite(df$add_del_ratio)] <- 999
+  df$add_del_ratio[is.na(df$add_del_ratio)] <- 1
+  df
+}
+
+get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95) {
+  if (!requireNamespace("solitude", quietly = TRUE)) {
+    stop("Пакет 'solitude' не установлен. Установите: install.packages('solitude')")
   }
   
-  source("R/anomalies_detection.R")
-  
-  if (exists("get_all_anomalies")) {
-    anomalies <- get_all_anomalies(conn, username = username)
-    return(anomalies)
-  } else {
-    return(git_error("function_not_found", "Функция get_all_anomalies не найдена в anomalies_detection.R"))
+  features_df <- prepare_anomaly_features(conn, author_name)
+  if (nrow(features_df) == 0) {
+    message("Нет данных для анализа аномалий")
+    return(data.frame())
   }
+  
+  X <- features_df[, c("hour", "dow", "n_files", "commit_size", "add_del_ratio")]
+  iso <- solitude::isolationForest$new(sample_size = min(nrow(X), 10000), num_trees = 100)
+  iso$fit(X)
+  scores <- iso$predict(X)
+  features_df$anomaly_score <- scores$anomaly_score
+  
+  quantile_thresh <- quantile(features_df$anomaly_score, probs = threshold, na.rm = TRUE)
+  anomalies <- features_df[features_df$anomaly_score >= quantile_thresh, ]
+  
+  anomalies$anomaly_type <- "ml_anomaly"
+  anomalies$description <- paste(
+    "ML-аномалия: оценка", round(anomalies$anomaly_score, 3),
+    "(порог", round(quantile_thresh, 3), ")"
+  )
+  
+  result <- data.frame(
+    author_name = anomalies$author_name,
+    date = NA,
+    anomaly_type = anomalies$anomaly_type,
+    description = anomalies$description,
+    anomaly_score = anomalies$anomaly_score,
+    commit = anomalies$commit,
+    stringsAsFactors = FALSE
+  )
+  
+  cat(sprintf("Найдено %d ML-аномалий (порог: %.2f%%)\n", nrow(result), threshold * 100))
+  return(result)
+}
+
+summary_ml_anomalies <- function(anomalies) {
+  if (nrow(anomalies) == 0) return(data.frame(author_name = character(), ml_anomaly_count = numeric()))
+  agg <- aggregate(anomaly_score ~ author_name, data = anomalies, FUN = length)
+  names(agg) <- c("author_name", "ml_anomaly_count")
+  agg[order(-agg$ml_anomaly_count), ]
 }
