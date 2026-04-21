@@ -8,7 +8,6 @@ refresh_developer_metrics <- function(conn) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
   
-  # Удаляем старую таблицу
   DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_metrics")
   
   DBI::dbExecute(conn, "
@@ -31,12 +30,8 @@ refresh_developer_metrics <- function(conn) {
       current_month_commits INTEGER,
       trend_direction VARCHAR,
       avg_commit_hour REAL,
-      sensitive_commits_count INTEGER,
       avg_add_per_commit REAL,
-      avg_del_per_commit REAL,
-      files_changed_per_commit REAL,
-      rework_ratio REAL,
-      commit_frequency REAL
+      avg_del_per_commit REAL
     )
   ")
   
@@ -67,15 +62,7 @@ refresh_developer_metrics <- function(conn) {
         AVG(d.count_add + d.count_del) AS avg_commit_size,
         COUNT(DISTINCT COALESCE(d.src_file, d.dst_file)) AS unique_files,
         AVG(d.count_add) AS avg_add_per_commit,
-        AVG(d.count_del) AS avg_del_per_commit,
-        AVG(d.count_add + d.count_del) AS files_changed_per_commit,
-        SUM(CASE WHEN d.count_del > 0 THEN 1 ELSE 0 END) / NULLIF(SUM(d.count_add), 1) AS rework_ratio,
-        COUNT(DISTINCT CASE 
-          WHEN LOWER(d.src_file) LIKE '%.env%%' OR LOWER(d.src_file) LIKE '%.key%%' 
-               OR LOWER(d.src_file) LIKE '%%secret%%' OR LOWER(d.src_file) LIKE '%%password%%'
-               OR LOWER(d.dst_file) LIKE '%.env%%' OR LOWER(d.dst_file) LIKE '%.key%%'
-               OR LOWER(d.dst_file) LIKE '%%secret%%' OR LOWER(d.dst_file) LIKE '%%password%%'
-          THEN d.commit END) AS sensitive_commits_count
+        AVG(d.count_del) AS avg_del_per_commit
       FROM git_commit_history c
       JOIN git_file_changes d ON c.commit = d.commit
       GROUP BY c.author_name
@@ -110,13 +97,6 @@ refresh_developer_metrics <- function(conn) {
         GROUP BY author_name, DATE_TRUNC('month', date)
       ) t
       GROUP BY author_name
-    ),
-    commit_freq AS (
-      SELECT 
-        author_name,
-        COUNT(*) / NULLIF(EXTRACT(EPOCH FROM (MAX(date) - MIN(date))) / 86400.0, 0) AS commit_frequency
-      FROM git_commit_history
-      GROUP BY author_name
     )
     INSERT INTO developer_metrics
     SELECT 
@@ -142,17 +122,12 @@ refresh_developer_metrics <- function(conn) {
         ELSE 'стабильно'
       END AS trend_direction,
       COALESCE(b.avg_commit_hour, 0) AS avg_commit_hour,
-      COALESCE(cc.sensitive_commits_count, 0) AS sensitive_commits_count,
       COALESCE(cc.avg_add_per_commit, 0) AS avg_add_per_commit,
-      COALESCE(cc.avg_del_per_commit, 0) AS avg_del_per_commit,
-      COALESCE(cc.files_changed_per_commit, 0) AS files_changed_per_commit,
-      COALESCE(cc.rework_ratio, 0) AS rework_ratio,
-      COALESCE(cf.commit_frequency, 0) AS commit_frequency
+      COALESCE(cc.avg_del_per_commit, 0) AS avg_del_per_commit
     FROM base b
     LEFT JOIN code_changes cc ON b.author_name = cc.author_name
     LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
     LEFT JOIN monthly_trend mt ON b.author_name = mt.author_name
-    LEFT JOIN commit_freq cf ON b.author_name = cf.author_name
   "
   
   result <- tryCatch(
@@ -163,7 +138,6 @@ refresh_developer_metrics <- function(conn) {
   message("Таблица developer_metrics обновлена")
   return(invisible(TRUE))
 }
-
 #' Получить базовую статистику по разработчику из витрины
 get_developer_stats <- function(conn, username = NULL) {
   if (missing(conn) || is.null(conn)) {

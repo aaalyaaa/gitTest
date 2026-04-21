@@ -52,8 +52,7 @@ prepare_clustering_data <- function(conn) {
         total_deleted,
         avg_add_per_commit,
         avg_del_per_commit,
-        unique_files,
-        sensitive_commits_count as sensitive_changes
+        unique_files
     FROM developer_metrics
   "
   df <- tryCatch(
@@ -68,7 +67,7 @@ prepare_clustering_data <- function(conn) {
   df_scaled <- df
   numeric_cols <- c("total_commits", "active_days", "avg_commit_hour", "night_commits",
                     "total_added", "total_deleted", "avg_add_per_commit", "avg_del_per_commit",
-                    "unique_files", "sensitive_changes")
+                    "unique_files")
   for (col in numeric_cols) {
     if (sd(df[[col]], na.rm = TRUE) > 0) {
       df_scaled[[col]] <- scale(df[[col]])
