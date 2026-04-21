@@ -4,9 +4,15 @@
 #' Обновить таблицу developer_metrics (витрина метрик)
 #' @param conn Подключение к DuckDB
 refresh_developer_metrics <- function(conn) {
+  if (missing(conn) || is.null(conn)) {
+    return(git_error("invalid_argument", "conn не может быть NULL"))
+  }
+  
+  # Удаляем старую таблицу
+  DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_metrics")
   
   DBI::dbExecute(conn, "
-    CREATE TABLE IF NOT EXISTS developer_metrics (
+    CREATE TABLE developer_metrics (
       author_name VARCHAR PRIMARY KEY,
       total_commits INTEGER,
       active_days INTEGER,
@@ -20,17 +26,25 @@ refresh_developer_metrics <- function(conn) {
       avg_commit_size REAL,
       unique_files INTEGER,
       avg_time_between_commits REAL,
-      bus_factor_contribution REAL,
+      contribution_share REAL,
       prev_month_commits INTEGER,
       current_month_commits INTEGER,
-      trend_direction VARCHAR
+      trend_direction VARCHAR,
+      avg_commit_hour REAL,
+      sensitive_commits_count INTEGER,
+      avg_add_per_commit REAL,
+      avg_del_per_commit REAL,
+      files_changed_per_commit REAL,
+      rework_ratio REAL,
+      commit_frequency REAL
     )
   ")
   
-  DBI::dbExecute(conn, "DELETE FROM developer_metrics")
-  
   query <- "
     WITH 
+    total_commits_all AS (
+      SELECT COUNT(*) AS total FROM git_commit_history
+    ),
     base AS (
       SELECT 
         author_name,
@@ -39,8 +53,9 @@ refresh_developer_metrics <- function(conn) {
         MIN(date) AS first_commit,
         MAX(date) AS last_commit,
         COUNT(DISTINCT CAST(date AS DATE)) AS active_days,
-        SUM(CASE WHEN EXTRACT(HOUR FROM date) BETWEEN 0 AND 5 THEN 1 ELSE 0 END) AS night_commits,
-        SUM(CASE WHEN EXTRACT(DOW FROM date) IN (0,6) THEN 1 ELSE 0 END) AS weekend_commits
+        SUM(CASE WHEN EXTRACT(HOUR FROM date) >= 22 OR EXTRACT(HOUR FROM date) < 6 THEN 1 ELSE 0 END) AS night_commits,
+        SUM(CASE WHEN EXTRACT(DOW FROM date) IN (0,6) THEN 1 ELSE 0 END) AS weekend_commits,
+        AVG(EXTRACT(HOUR FROM date)) AS avg_commit_hour
       FROM git_commit_history
       GROUP BY author_name
     ),
@@ -50,7 +65,17 @@ refresh_developer_metrics <- function(conn) {
         SUM(d.count_add) AS total_added,
         SUM(d.count_del) AS total_deleted,
         AVG(d.count_add + d.count_del) AS avg_commit_size,
-        COUNT(DISTINCT d.src_file) AS unique_files
+        COUNT(DISTINCT COALESCE(d.src_file, d.dst_file)) AS unique_files,
+        AVG(d.count_add) AS avg_add_per_commit,
+        AVG(d.count_del) AS avg_del_per_commit,
+        AVG(d.count_add + d.count_del) AS files_changed_per_commit,
+        SUM(CASE WHEN d.count_del > 0 THEN 1 ELSE 0 END) / NULLIF(SUM(d.count_add), 1) AS rework_ratio,
+        COUNT(DISTINCT CASE 
+          WHEN LOWER(d.src_file) LIKE '%.env%%' OR LOWER(d.src_file) LIKE '%.key%%' 
+               OR LOWER(d.src_file) LIKE '%%secret%%' OR LOWER(d.src_file) LIKE '%%password%%'
+               OR LOWER(d.dst_file) LIKE '%.env%%' OR LOWER(d.dst_file) LIKE '%.key%%'
+               OR LOWER(d.dst_file) LIKE '%%secret%%' OR LOWER(d.dst_file) LIKE '%%password%%'
+          THEN d.commit END) AS sensitive_commits_count
       FROM git_commit_history c
       JOIN git_file_changes d ON c.commit = d.commit
       GROUP BY c.author_name
@@ -58,23 +83,17 @@ refresh_developer_metrics <- function(conn) {
     commit_gaps AS (
       SELECT 
         author_name,
-        AVG(gap_days) AS avg_time_between_commits
+        AVG(gap_hours) AS avg_time_between_commits
       FROM (
         SELECT 
           author_name,
-          commit_date,
-          LAG(commit_date) OVER (PARTITION BY author_name ORDER BY commit_date) AS prev_date,
-          DATEDIFF('day', LAG(commit_date) OVER (PARTITION BY author_name ORDER BY commit_date), commit_date) AS gap_days
-        FROM (
-          SELECT DISTINCT author_name, CAST(date AS DATE) AS commit_date
-          FROM git_commit_history
-        ) t
+          date AS commit_date,
+          LAG(date) OVER (PARTITION BY author_name ORDER BY date) AS prev_date,
+          EXTRACT(EPOCH FROM (date - LAG(date) OVER (PARTITION BY author_name ORDER BY date))) / 3600.0 AS gap_hours
+        FROM git_commit_history
       ) gaps
-      WHERE gap_days IS NOT NULL
+      WHERE gap_hours IS NOT NULL
       GROUP BY author_name
-    ),
-    total_project_commits AS (
-      SELECT SUM(total_commits) AS total FROM base
     ),
     monthly_trend AS (
       SELECT 
@@ -91,6 +110,13 @@ refresh_developer_metrics <- function(conn) {
         GROUP BY author_name, DATE_TRUNC('month', date)
       ) t
       GROUP BY author_name
+    ),
+    commit_freq AS (
+      SELECT 
+        author_name,
+        COUNT(*) / NULLIF(EXTRACT(EPOCH FROM (MAX(date) - MIN(date))) / 86400.0, 0) AS commit_frequency
+      FROM git_commit_history
+      GROUP BY author_name
     )
     INSERT INTO developer_metrics
     SELECT 
@@ -106,39 +132,63 @@ refresh_developer_metrics <- function(conn) {
       COALESCE(cc.total_deleted, 0) AS total_deleted,
       COALESCE(cc.avg_commit_size, 0) AS avg_commit_size,
       COALESCE(cc.unique_files, 0) AS unique_files,
-      cg.avg_time_between_commits AS avg_time_between_commits,
-      ROUND(1.0 * b.total_commits / tpc.total, 4) AS bus_factor_contribution,
+      cg.avg_time_between_commits,
+      ROUND(1.0 * b.total_commits / NULLIF((SELECT total FROM total_commits_all), 0), 4) AS contribution_share,
       COALESCE(mt.prev_month_commits, 0) AS prev_month_commits,
       COALESCE(mt.current_month_commits, 0) AS current_month_commits,
       CASE 
         WHEN COALESCE(mt.current_month_commits, 0) > COALESCE(mt.prev_month_commits, 0) THEN 'рост'
         WHEN COALESCE(mt.current_month_commits, 0) < COALESCE(mt.prev_month_commits, 0) THEN 'падение'
         ELSE 'стабильно'
-      END AS trend_direction
+      END AS trend_direction,
+      COALESCE(b.avg_commit_hour, 0) AS avg_commit_hour,
+      COALESCE(cc.sensitive_commits_count, 0) AS sensitive_commits_count,
+      COALESCE(cc.avg_add_per_commit, 0) AS avg_add_per_commit,
+      COALESCE(cc.avg_del_per_commit, 0) AS avg_del_per_commit,
+      COALESCE(cc.files_changed_per_commit, 0) AS files_changed_per_commit,
+      COALESCE(cc.rework_ratio, 0) AS rework_ratio,
+      COALESCE(cf.commit_frequency, 0) AS commit_frequency
     FROM base b
     LEFT JOIN code_changes cc ON b.author_name = cc.author_name
     LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
-    CROSS JOIN total_project_commits tpc
     LEFT JOIN monthly_trend mt ON b.author_name = mt.author_name
+    LEFT JOIN commit_freq cf ON b.author_name = cf.author_name
   "
   
-  DBI::dbExecute(conn, query)
+  result <- tryCatch(
+    DBI::dbExecute(conn, query),
+    error = function(e) git_error("db_error", paste("Ошибка обновления метрик:", e$message))
+  )
+  if (is_git_error(result)) return(result)
   message("Таблица developer_metrics обновлена")
+  return(invisible(TRUE))
 }
 
 #' Получить базовую статистику по разработчику из витрины
-#' @param conn Подключение к БД
-#' @param username Имя разработчика (опционально)
 get_developer_stats <- function(conn, username = NULL) {
+  if (missing(conn) || is.null(conn)) {
+    return(git_error("invalid_argument", "conn не может быть NULL"))
+  }
   query <- "SELECT * FROM developer_metrics"
   if (!is.null(username)) {
-    query <- sprintf("%s WHERE author_name LIKE '%%%s%%'", query, username)
+    query <- paste(query, "WHERE author_name LIKE ?")
+    params <- list(paste0("%", username, "%"))
+  } else {
+    params <- NULL
   }
-  DBI::dbGetQuery(conn, query)
+  result <- tryCatch(
+    DBI::dbGetQuery(conn, query, params = params),
+    error = function(e) git_error("db_error", paste("Ошибка запроса статистики:", e$message))
+  )
+  # Если ошибка БД – вернём её, иначе даже пустой data.frame – успех
+  return(result)
 }
 
 #' Сводная статистика по команде
 get_summary_stats <- function(conn) {
+  if (missing(conn) || is.null(conn)) {
+    return(git_error("invalid_argument", "conn не может быть NULL"))
+  }
   query <- "
     SELECT 
       COUNT(*) AS total_developers,
@@ -146,70 +196,97 @@ get_summary_stats <- function(conn) {
       MIN(first_commit) AS first_commit,
       MAX(last_commit) AS last_commit,
       AVG(total_commits) AS avg_commits_per_dev,
-      SUM(CASE WHEN bus_factor_contribution > 0.5 THEN 1 ELSE 0 END) AS critical_developers
+      SUM(CASE WHEN contribution_share > 0.5 THEN 1 ELSE 0 END) AS critical_developers
     FROM developer_metrics
   "
-  overview <- DBI::dbGetQuery(conn, query)
+  overview <- tryCatch(
+    DBI::dbGetQuery(conn, query),
+    error = function(e) git_error("db_error", paste("Ошибка сводной статистики:", e$message))
+  )
+  if (is_git_error(overview)) return(overview)
   
-  top5 <- DBI::dbGetQuery(conn, "
-    SELECT author_name, total_commits
-    FROM developer_metrics
-    ORDER BY total_commits DESC
-    LIMIT 5
-  ")
+  top5 <- tryCatch(
+    DBI::dbGetQuery(conn, "
+      SELECT author_name, total_commits
+      FROM developer_metrics
+      ORDER BY total_commits DESC
+      LIMIT 5
+    "),
+    error = function(e) git_error("db_error", paste("Ошибка получения топ-5:", e$message))
+  )
+  if (is_git_error(top5)) return(top5)
   
   list(overview = overview, top_5_developers = top5)
 }
 
-#' Получить командные метрики (продуктивность, риски) на основе витрины
+#' Получить командные метрики
 get_team_metrics <- function(conn) {
-  df <- DBI::dbGetQuery(conn, "
-    SELECT 
-      author_name,
-      total_commits,
-      active_days,
-      total_commits / NULLIF(active_days, 0) AS commits_per_day,
-      avg_commit_size,
-      unique_files,
-      night_commits,
-      weekend_commits,
-      avg_time_between_commits,
-      bus_factor_contribution,
-      current_month_commits,
-      prev_month_commits,
-      trend_direction
-    FROM developer_metrics
-    ORDER BY total_commits DESC
-  ")
+  if (missing(conn) || is.null(conn)) {
+    return(git_error("invalid_argument", "conn не может быть NULL"))
+  }
+  df <- tryCatch(
+    DBI::dbGetQuery(conn, "
+      SELECT 
+        author_name,
+        total_commits,
+        active_days,
+        total_commits / NULLIF(active_days, 0) AS commits_per_day,
+        avg_commit_size,
+        unique_files,
+        night_commits,
+        weekend_commits,
+        avg_time_between_commits,
+        contribution_share,
+        current_month_commits,
+        prev_month_commits,
+        trend_direction
+      FROM developer_metrics
+      ORDER BY total_commits DESC
+    "),
+    error = function(e) git_error("db_error", paste("Ошибка получения командных метрик:", e$message))
+  )
+  if (is_git_error(df)) return(df)
   
-  df$productivity_level <- cut(df$commits_per_day,
-                               breaks = c(-Inf, 0.5, 1.5, 3, Inf),
-                               labels = c("низкая", "средняя", "высокая", "очень высокая"))
+  if (nrow(df) > 0) {
+    df$productivity_level <- cut(df$commits_per_day,
+                                 breaks = c(-Inf, 0.5, 1.5, 3, Inf),
+                                 labels = c("низкая", "средняя", "высокая", "очень высокая"))
+  }
   df
 }
 
-#' Оценка рисков команды (на основе витрины)
+#' Оценка рисков команды
 get_team_risks <- function(conn) {
-  df <- DBI::dbGetQuery(conn, "
-    SELECT 
-      author_name,
-      total_commits,
-      night_commits,
-      weekend_commits,
-      total_commits / NULLIF(active_days, 0) AS commits_per_day,
-      avg_time_between_commits,
-      CASE 
-        WHEN (night_commits * 1.0 / total_commits) > 0.3 OR (weekend_commits * 1.0 / total_commits) > 0.2 THEN 'high'
-        WHEN (night_commits * 1.0 / total_commits) > 0.15 OR (weekend_commits * 1.0 / total_commits) > 0.1 THEN 'medium'
-        ELSE 'low'
-      END AS burnout_risk,
-      -- Bug risk: если много уникальных файлов и большой размер коммита
-      CASE 
-        WHEN unique_files > 50 AND avg_commit_size > 300 THEN 'high'
-        WHEN unique_files > 20 OR avg_commit_size > 150 THEN 'medium'
-        ELSE 'low'
-      END AS bug_risk
-    FROM developer_metrics
-  ")
-  df[, c("author_name", "total_commits", "burnout_risk", "bug_risk", "avg_time_between_commits")]
+  if (missing(conn) || is.null(conn)) {
+    return(git_error("invalid_argument", "conn не может быть NULL"))
+  }
+  df <- tryCatch(
+    DBI::dbGetQuery(conn, "
+      SELECT 
+        author_name,
+        total_commits,
+        night_commits,
+        weekend_commits,
+        total_commits / NULLIF(active_days, 0) AS commits_per_day,
+        avg_time_between_commits,
+        CASE 
+          WHEN (night_commits * 1.0 / total_commits) > 0.3 OR (weekend_commits * 1.0 / total_commits) > 0.2 THEN 'high'
+          WHEN (night_commits * 1.0 / total_commits) > 0.15 OR (weekend_commits * 1.0 / total_commits) > 0.1 THEN 'medium'
+          ELSE 'low'
+        END AS burnout_risk,
+        CASE 
+          WHEN unique_files > 50 AND avg_commit_size > 300 THEN 'high'
+          WHEN unique_files > 20 OR avg_commit_size > 150 THEN 'medium'
+          ELSE 'low'
+        END AS bug_risk
+      FROM developer_metrics
+    "),
+    error = function(e) git_error("db_error", paste("Ошибка оценки рисков:", e$message))
+  )
+  if (is_git_error(df)) return(df)
+  
+  if (nrow(df) > 0) {
+    df <- df[, c("author_name", "total_commits", "burnout_risk", "bug_risk", "avg_time_between_commits")]
+  }
+  df
 }
