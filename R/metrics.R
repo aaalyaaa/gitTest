@@ -1,13 +1,9 @@
-# metrics.R
 # Единый источник метрик разработчиков
 
-#' Обновить таблицу developer_metrics (витрина метрик)
-#' @param conn Подключение к DuckDB
 refresh_developer_metrics <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
-  
   DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_metrics")
   
   DBI::dbExecute(conn, "
@@ -154,7 +150,6 @@ get_developer_stats <- function(conn, username = NULL) {
     DBI::dbGetQuery(conn, query, params = params),
     error = function(e) git_error("db_error", paste("Ошибка запроса статистики:", e$message))
   )
-  # Если ошибка БД – вернём её, иначе даже пустой data.frame – успех
   return(result)
 }
 

@@ -1,10 +1,4 @@
-# ml_analysis.R
-library(dplyr)
-library(forecast)
-library(cluster)
-library(ggplot2)
 
-# Исправленный оптимальный выбор числа кластеров (метод локтя + силуэт)
 optimal_clusters <- function(data, max_clusters = 10) {
   if (missing(data)) {
     return(git_error("invalid_argument", "data не может быть пропущен"))
@@ -19,7 +13,6 @@ optimal_clusters <- function(data, max_clusters = 10) {
     kmeans(data, centers = k, nstart = 10)$tot.withinss
   })
   
-  # Метод локтя
   if (length(wss) >= 3) {
     diffs <- diff(wss)
     diffs2 <- diff(diffs)
@@ -27,7 +20,6 @@ optimal_clusters <- function(data, max_clusters = 10) {
     if (!is.na(elbow) && elbow >= 2 && elbow <= max_k) return(elbow)
   }
   
-  # Силуэт
   sil_scores <- sapply(2:max_k, function(k) {
     km <- kmeans(data, centers = k, nstart = 10)
     ss <- silhouette(km$cluster, dist(data))
@@ -126,9 +118,9 @@ cluster_developers <- function(conn, n_clusters = NULL) {
       if (profile$unique_files > median(ml_data$data$unique_files)) {
         cluster_names <- c(cluster_names, "Многофайловый")
       } else if (profile$night_commits > 3) {
-        cluster_names <- c(cluster_names, "Совенок")
+        cluster_names <- c(cluster_names, "Низкоактивный ночной")
       } else {
-        cluster_names <- c(cluster_names, "Специалист")
+        cluster_names <- c(cluster_names, "Стабильный специалист")
       }
     }
   }
@@ -195,7 +187,7 @@ plot_forecast <- function(forecast_result) {
     return(invisible(NULL))
   }
   if (is_git_error(forecast_result)) {
-    cat("⚠️", forecast_result$message, "\n")
+    cat(forecast_result$message, "\n")
     return(invisible(NULL))
   }
   plot_data <- forecast_result$plot_data
@@ -300,11 +292,6 @@ get_activity_trends <- function(conn, author_name = NULL) {
 }
 
 #' Обнаружение ML-аномалий с возвратом признаков и объяснением
-#' @param conn Подключение к DuckDB
-#' @param author_name Опционально фильтр по автору
-#' @param threshold Порог аномальности (по умолчанию 0.95)
-#' @param return_features Возвращать ли признаки (hour, dow, n_files, commit_size, add_del_ratio)
-#' @return data.frame с аномалиями (включая признаки и explanation) или git_error
 get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95, return_features = TRUE) {
   if (!requireNamespace("solitude", quietly = TRUE)) {
     return(git_error("missing_package", "Пакет 'solitude' не установлен. Установите: install.packages('solitude')"))
@@ -313,21 +300,18 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95, return_
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
   
-  # Получаем данные с признаками
   features_df <- prepare_anomaly_features(conn, author_name)
   if (is_git_error(features_df)) return(features_df)
   if (nrow(features_df) == 0) {
     return(data.frame())  # нет данных – не ошибка
   }
   
-  # Обучаем Isolation Forest
   X <- features_df[, c("hour", "dow", "n_files", "commit_size", "add_del_ratio")]
   iso <- solitude::isolationForest$new(sample_size = min(nrow(X), 10000), num_trees = 100)
   iso$fit(X)
   scores <- iso$predict(X)
   features_df$anomaly_score <- scores$anomaly_score
   
-  # Отбираем аномалии по порогу
   quantile_thresh <- quantile(features_df$anomaly_score, probs = threshold, na.rm = TRUE)
   anomalies <- features_df[features_df$anomaly_score >= quantile_thresh, ]
   
@@ -336,7 +320,6 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95, return_
     return(data.frame())
   }
   
-  # Формируем человеко-читаемое объяснение
   anomalies$explanation <- apply(anomalies, 1, function(row) {
     reasons <- c()
     hour <- as.numeric(row["hour"])
@@ -380,7 +363,6 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95, return_
     stringsAsFactors = FALSE
   )
   
-  # Добавляем признаки по желанию
   if (return_features && nrow(anomalies) > 0) {
     result$hour <- anomalies$hour
     result$dow <- anomalies$dow

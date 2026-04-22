@@ -1,6 +1,4 @@
-# team_analytics.R
-
-#' Получить профиль разработчика для HR/тимлида
+#' Получить профиль разработчика
 get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(list(error = "conn не может быть NULL"))
@@ -17,7 +15,6 @@ get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL
     return(list(error = paste("Разработчик", author_name, "не найден")))
   }
   
-  # Используем предвычисленные кластеры
   if (!is.null(precomputed_clusters) && !is_git_error(precomputed_clusters)) {
     clusters <- precomputed_clusters
   } else {
@@ -61,19 +58,19 @@ get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL
   }
   
   role <- switch(cluster_type,
-                 "Ночной трудоголик" = "Senior / нестандартный график",
+                 "Ночной трудоголик" = "Ведущий разработчик (нестандартный график)",
                  "Активный разработчик" = "Лидер / core contributor",
-                 "Многофайловый" = "Архитектор / интегратор",
-                 "Совенок" = "Эксперт в узкой области",
-                 "Специалист" = "Junior / стабильный исполнитель",
+                 "Многофайловый" = "Архитектор / интегратор систем",
+                 "Низкоактивный ночной" = "Эксперт в узкой области (ночная работа)",
+                 "Стабильный специалист" = "Стабильный исполнитель / поддержка",
                  "Разработчик")
   
   rec_tasks <- switch(cluster_type,
                       "Ночной трудоголик" = "сложные задачи без жёстких дедлайнов, исследование",
                       "Активный разработчик" = "критичные фичи, code review, менторство",
-                      "Многофайловый" = "рефакторинг, интеграция модулей",
-                      "Совенок" = "глубокие технические задачи, оптимизация",
-                      "Специалист" = "поддержка, документация, багфиксы",
+                      "Многофайловый" = "рефакторинг, интеграция модулей, кросс-командное взаимодействие",
+                      "Низкоактивный ночной" = "глубокие технические задачи, оптимизация (в удобное время)",
+                      "Стабильный специалист" = "поддержка, документация, багфиксы, стабильные задачи",
                       "участие в кодовой базе")
   
   list(
@@ -85,7 +82,6 @@ get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL
   )
 }
 
-#' Рекомендовать состав команды
 recommend_team <- function(conn, project_type = "generic", team_size = 5) {
   if (missing(conn) || is.null(conn)) {
     cat("Ошибка: conn не может быть NULL\n")
@@ -109,8 +105,8 @@ recommend_team <- function(conn, project_type = "generic", team_size = 5) {
     mobile = c("Активный разработчик" = 0.5, "Специалист" = 0.3, "Совенок" = 0.1, "Многофайловый" = 0.1, "Ночной трудоголик" = 0.0),
     devops = c("Многофайловый" = 0.4, "Активный разработчик" = 0.3, "Совенок" = 0.2, "Ночной трудоголик" = 0.1, "Специалист" = 0.0),
     game_dev = c("Активный разработчик" = 0.35, "Совенок" = 0.35, "Многофайловый" = 0.2, "Ночной трудоголик" = 0.1, "Специалист" = 0.0),
-    embedded = c("Специалист" = 0.4, "Совенок" = 0.3, "Активный разработчик" = 0.2, "Многофайловый" = 0.1, "Ночной трудоголик" = 0.0),
-    generic = c("Активный разработчик" = 0.35, "Специалист" = 0.25, "Многофайловый" = 0.2, "Совенок" = 0.1, "Ночной трудоголик" = 0.1)
+    frontend = c("Активный разработчик" = 0.4, "Специалист" = 0.3, "Совенок" = 0.1, "Многофайловый" = 0.1, "Ночной трудоголик" = 0.1),
+    fullstack = c("Активный разработчик" = 0.35, "Специалист" = 0.25, "Многофайловый" = 0.2, "Совенок" = 0.1, "Ночной трудоголик" = 0.1)
   )
   targets <- role_targets[[project_type]]
   if (is.null(targets)) targets <- role_targets[["generic"]]
@@ -151,13 +147,10 @@ print_team_report <- function(conn, include_anomalies = FALSE) {
     return(invisible(NULL))
   }
   
-  cat("\n========================================\n")
-  cat("        ОТЧЁТ ПО КОМАНДЕ РАЗРАБОТЧИКОВ\n")
-  cat("========================================\n")
+  cat("Отчет по команде разработчиков\n")
   
   summary <- get_summary_stats(conn)
   if (!is_git_error(summary)) {
-    cat("\n--- ОБЩАЯ СТАТИСТИКА ---\n")
     cat("Всего разработчиков:", summary$overview$total_developers, "\n")
     cat("Всего коммитов:", summary$overview$total_commits, "\n")
     cat("Критически важных разработчиков (вклад >0.5):", summary$overview$critical_developers, "\n")
@@ -167,7 +160,7 @@ print_team_report <- function(conn, include_anomalies = FALSE) {
   
   metrics <- get_team_metrics(conn)
   if (!is_git_error(metrics) && nrow(metrics) > 0) {
-    cat("\n--- ПРОДУКТИВНОСТЬ ---\n")
+    cat("\nПродуктивность\n")
     print(metrics[, c("author_name", "total_commits", "commits_per_day", "productivity_level", "trend_direction")])
   } else if (is_git_error(metrics)) {
     cat("Ошибка получения метрик:", metrics$message, "\n")
@@ -175,7 +168,7 @@ print_team_report <- function(conn, include_anomalies = FALSE) {
   
   risks <- get_team_risks(conn)
   if (!is_git_error(risks) && nrow(risks) > 0) {
-    cat("\n--- ОЦЕНКА РИСКОВ ---\n")
+    cat("\nОценка рисков\n")
     print(risks[, c("author_name", "burnout_risk", "bug_risk", "avg_time_between_commits")])
   } else if (is_git_error(risks)) {
     cat("Ошибка оценки рисков:", risks$message, "\n")
@@ -184,10 +177,7 @@ print_team_report <- function(conn, include_anomalies = FALSE) {
   if (include_anomalies) {
     anomalies <- tryCatch(get_all_anomalies(conn), error = function(e) NULL)
     if (!is.null(anomalies) && !is_git_error(anomalies) && nrow(anomalies) > 0) {
-      cat("\n--- ТОП АНОМАЛИЙ ---\n")
+      cat("\n Топ аномалий\n")
       top_anom <- get_top_anomaly_developers(anomalies, n = 3)
       if (nrow(top_anom) > 0) print(top_anom)
-    }
-  }
-  cat("\n========================================\n")
-}
+    }}}
