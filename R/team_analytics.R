@@ -65,20 +65,13 @@ get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL
                  "Стабильный специалист" = "Стабильный исполнитель / поддержка",
                  "Разработчик")
   
-  rec_tasks <- switch(cluster_type,
-                      "Ночной трудоголик" = "сложные задачи без жёстких дедлайнов, исследование",
-                      "Активный разработчик" = "критичные фичи, code review, менторство",
-                      "Многофайловый" = "рефакторинг, интеграция модулей, кросс-командное взаимодействие",
-                      "Низкоактивный ночной" = "глубокие технические задачи, оптимизация (в удобное время)",
-                      "Стабильный специалист" = "поддержка, документация, багфиксы, стабильные задачи",
-                      "участие в кодовой базе")
   
   list(
     name = author_name, role = role, main_language = main_lang,
     work_style = work_style, contribution = contribution,
     total_commits = stats$total_commits[1],
     active_days = stats$active_days[1],
-    recommended_tasks = rec_tasks, cluster = cluster_type
+    cluster = cluster_type
   )
 }
 
@@ -166,18 +159,12 @@ print_team_report <- function(conn, include_anomalies = FALSE) {
     cat("Ошибка получения метрик:", metrics$message, "\n")
   }
   
-  risks <- get_team_risks(conn)
-  if (!is_git_error(risks) && nrow(risks) > 0) {
-    cat("\nОценка рисков\n")
-    print(risks[, c("author_name", "burnout_risk", "bug_risk", "avg_time_between_commits")])
-  } else if (is_git_error(risks)) {
-    cat("Ошибка оценки рисков:", risks$message, "\n")
-  }
-  
   if (include_anomalies) {
     anomalies <- tryCatch(get_all_anomalies(conn), error = function(e) NULL)
     if (!is.null(anomalies) && !is_git_error(anomalies) && nrow(anomalies) > 0) {
       cat("\n Топ аномалий\n")
       top_anom <- get_top_anomaly_developers(anomalies, n = 3)
       if (nrow(top_anom) > 0) print(top_anom)
-    }}}
+    }
+  }
+}

@@ -164,8 +164,13 @@ forecast_developer_activity <- function(conn, author_name, forecast_days = 7) {
   }
   if (is.null(fit)) {
     forecast_mean <- rep(mean(df$commits), forecast_days)
-    forecast_obj <- list(mean = forecast_mean, lower = matrix(forecast_mean - sd(df$commits), ncol=2),
-                         upper = matrix(forecast_mean + sd(df$commits), ncol=2))
+    lower_val <- mean(df$commits) - sd(df$commits)
+    upper_val <- mean(df$commits) + sd(df$commits)
+    forecast_obj <- list(
+      mean = forecast_mean,
+      lower = matrix(rep(lower_val, each = 2), nrow = forecast_days, ncol = 2, byrow = TRUE),
+      upper = matrix(rep(upper_val, each = 2), nrow = forecast_days, ncol = 2, byrow = TRUE)
+    )
     class(forecast_obj) <- "forecast"
   } else {
     forecast_obj <- forecast(fit, h = forecast_days)
@@ -177,6 +182,16 @@ forecast_developer_activity <- function(conn, author_name, forecast_days = 7) {
     upper = as.numeric(forecast_obj$upper[, 2])
   )
   expected <- round(sum(forecast_obj$mean, na.rm = TRUE), 1)
+  warnings_list <- list()
+  if (nrow(df) < 10) {
+    warnings_list <- c(warnings_list, "Мало исторических данных (<10 точек). Прогноз может быть неточным.")
+  }
+  if (sd(df$commits) > mean(df$commits)) {
+    warnings_list <- c(warnings_list, "Разброс в частоте коммитов большой, доверительные границы прогноза широкие.")
+  }
+  list(author = author_name, historical = df, forecast = forecast_obj,
+       expected_commits_next_week = expected, plot_data = plot_data,
+       warnings = warnings_list)
   list(author = author_name, historical = df, forecast = forecast_obj,
        expected_commits_next_week = expected, plot_data = plot_data)
 }

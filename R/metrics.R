@@ -1,9 +1,11 @@
 # Единый источник метрик разработчиков
 
+#' Обновить таблицу developer_metrics (витрина метрик)
 refresh_developer_metrics <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
+  
   DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_metrics")
   
   DBI::dbExecute(conn, "
@@ -43,7 +45,7 @@ refresh_developer_metrics <- function(conn) {
         COUNT(DISTINCT repo) AS repos_count,
         MIN(date) AS first_commit,
         MAX(date) AS last_commit,
-        COUNT(DISTINCT CAST(date AS DATE)) AS active_days,
+        COUNT(DISTINCT date::DATE) AS active_days,
         SUM(CASE WHEN EXTRACT(HOUR FROM date) >= 22 OR EXTRACT(HOUR FROM date) < 6 THEN 1 ELSE 0 END) AS night_commits,
         SUM(CASE WHEN EXTRACT(DOW FROM date) IN (0,6) THEN 1 ELSE 0 END) AS weekend_commits,
         AVG(EXTRACT(HOUR FROM date)) AS avg_commit_hour
@@ -70,7 +72,7 @@ refresh_developer_metrics <- function(conn) {
       FROM (
         SELECT 
           author_name,
-          date AS commit_date,
+          date,
           LAG(date) OVER (PARTITION BY author_name ORDER BY date) AS prev_date,
           EXTRACT(EPOCH FROM (date - LAG(date) OVER (PARTITION BY author_name ORDER BY date))) / 3600.0 AS gap_hours
         FROM git_commit_history
@@ -108,7 +110,7 @@ refresh_developer_metrics <- function(conn) {
       COALESCE(cc.total_deleted, 0) AS total_deleted,
       COALESCE(cc.avg_commit_size, 0) AS avg_commit_size,
       COALESCE(cc.unique_files, 0) AS unique_files,
-      cg.avg_time_between_commits,
+      ROUND(cg.avg_time_between_commits, 2) AS avg_time_between_commits,
       ROUND(1.0 * b.total_commits / NULLIF((SELECT total FROM total_commits_all), 0), 4) AS contribution_share,
       COALESCE(mt.prev_month_commits, 0) AS prev_month_commits,
       COALESCE(mt.current_month_commits, 0) AS current_month_commits,
@@ -225,6 +227,7 @@ get_team_metrics <- function(conn) {
 }
 
 #' Оценка рисков команды
+#' Оценка рисков команды (без burnout_risk и bug_risk)
 get_team_risks <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -237,17 +240,7 @@ get_team_risks <- function(conn) {
         night_commits,
         weekend_commits,
         total_commits / NULLIF(active_days, 0) AS commits_per_day,
-        avg_time_between_commits,
-        CASE 
-          WHEN (night_commits * 1.0 / total_commits) > 0.3 OR (weekend_commits * 1.0 / total_commits) > 0.2 THEN 'high'
-          WHEN (night_commits * 1.0 / total_commits) > 0.15 OR (weekend_commits * 1.0 / total_commits) > 0.1 THEN 'medium'
-          ELSE 'low'
-        END AS burnout_risk,
-        CASE 
-          WHEN unique_files > 50 AND avg_commit_size > 300 THEN 'high'
-          WHEN unique_files > 20 OR avg_commit_size > 150 THEN 'medium'
-          ELSE 'low'
-        END AS bug_risk
+        avg_time_between_commits
       FROM developer_metrics
     "),
     error = function(e) git_error("db_error", paste("Ошибка оценки рисков:", e$message))
@@ -255,7 +248,7 @@ get_team_risks <- function(conn) {
   if (is_git_error(df)) return(df)
   
   if (nrow(df) > 0) {
-    df <- df[, c("author_name", "total_commits", "burnout_risk", "bug_risk", "avg_time_between_commits")]
+    df <- df[, c("author_name", "total_commits", "avg_time_between_commits")]
   }
   df
 }
