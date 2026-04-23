@@ -5,7 +5,6 @@ refresh_developer_metrics <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
-  
   DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_metrics")
   
   DBI::dbExecute(conn, "
@@ -29,7 +28,9 @@ refresh_developer_metrics <- function(conn) {
       trend_direction VARCHAR,
       avg_commit_hour REAL,
       avg_add_per_commit REAL,
-      avg_del_per_commit REAL
+      avg_del_per_commit REAL,
+      primary_language VARCHAR,
+      language_count INTEGER
     )
   ")
   
@@ -45,7 +46,7 @@ refresh_developer_metrics <- function(conn) {
         COUNT(DISTINCT repo) AS repos_count,
         MIN(date) AS first_commit,
         MAX(date) AS last_commit,
-        COUNT(DISTINCT date::DATE) AS active_days,
+        COUNT(DISTINCT CAST(date AS DATE)) AS active_days,
         SUM(CASE WHEN EXTRACT(HOUR FROM date) >= 22 OR EXTRACT(HOUR FROM date) < 6 THEN 1 ELSE 0 END) AS night_commits,
         SUM(CASE WHEN EXTRACT(DOW FROM date) IN (0,6) THEN 1 ELSE 0 END) AS weekend_commits,
         AVG(EXTRACT(HOUR FROM date)) AS avg_commit_hour
@@ -72,7 +73,7 @@ refresh_developer_metrics <- function(conn) {
       FROM (
         SELECT 
           author_name,
-          date,
+          date AS commit_date,
           LAG(date) OVER (PARTITION BY author_name ORDER BY date) AS prev_date,
           EXTRACT(EPOCH FROM (date - LAG(date) OVER (PARTITION BY author_name ORDER BY date))) / 3600.0 AS gap_hours
         FROM git_commit_history
@@ -95,6 +96,23 @@ refresh_developer_metrics <- function(conn) {
         GROUP BY author_name, DATE_TRUNC('month', date)
       ) t
       GROUP BY author_name
+    ),
+    language_stats AS (
+      SELECT 
+        author_name,
+        FIRST_VALUE(file_extension) OVER (PARTITION BY author_name ORDER BY cnt DESC) AS primary_language,
+        COUNT(DISTINCT file_extension) AS language_count
+      FROM (
+        SELECT 
+          c.author_name,
+          d.file_extension,
+          COUNT(*) AS cnt
+        FROM git_commit_history c
+        JOIN git_file_changes d ON c.commit = d.commit
+        WHERE d.file_extension IS NOT NULL AND d.file_extension != ''
+        GROUP BY c.author_name, d.file_extension
+      ) lang
+      GROUP BY author_name
     )
     INSERT INTO developer_metrics
     SELECT 
@@ -110,7 +128,7 @@ refresh_developer_metrics <- function(conn) {
       COALESCE(cc.total_deleted, 0) AS total_deleted,
       COALESCE(cc.avg_commit_size, 0) AS avg_commit_size,
       COALESCE(cc.unique_files, 0) AS unique_files,
-      ROUND(cg.avg_time_between_commits, 2) AS avg_time_between_commits,
+      cg.avg_time_between_commits,
       ROUND(1.0 * b.total_commits / NULLIF((SELECT total FROM total_commits_all), 0), 4) AS contribution_share,
       COALESCE(mt.prev_month_commits, 0) AS prev_month_commits,
       COALESCE(mt.current_month_commits, 0) AS current_month_commits,
@@ -121,11 +139,14 @@ refresh_developer_metrics <- function(conn) {
       END AS trend_direction,
       COALESCE(b.avg_commit_hour, 0) AS avg_commit_hour,
       COALESCE(cc.avg_add_per_commit, 0) AS avg_add_per_commit,
-      COALESCE(cc.avg_del_per_commit, 0) AS avg_del_per_commit
+      COALESCE(cc.avg_del_per_commit, 0) AS avg_del_per_commit,
+      COALESCE(ls.primary_language, 'unknown') AS primary_language,
+      COALESCE(ls.language_count, 0) AS language_count
     FROM base b
     LEFT JOIN code_changes cc ON b.author_name = cc.author_name
     LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
     LEFT JOIN monthly_trend mt ON b.author_name = mt.author_name
+    LEFT JOIN language_stats ls ON b.author_name = ls.author_name
   "
   
   result <- tryCatch(
@@ -133,7 +154,29 @@ refresh_developer_metrics <- function(conn) {
     error = function(e) git_error("db_error", paste("Ошибка обновления метрик:", e$message))
   )
   if (is_git_error(result)) return(result)
-  message("Таблица developer_metrics обновлена")
+  
+  # Шаг 2. Создаём отдельную таблицу developer_languages для гибкости
+  DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_languages")
+  DBI::dbExecute(conn, "
+    CREATE TABLE developer_languages AS
+    SELECT 
+      author_name,
+      file_extension,
+      COUNT(*) AS file_changes,
+      ROW_NUMBER() OVER (PARTITION BY author_name ORDER BY COUNT(*) DESC) AS lang_rank
+    FROM (
+      SELECT 
+        c.author_name,
+        d.file_extension
+      FROM git_commit_history c
+      JOIN git_file_changes d ON c.commit = d.commit
+      WHERE d.file_extension IS NOT NULL AND d.file_extension != ''
+    ) t
+    GROUP BY author_name, file_extension
+  ")
+  
+  message("Таблица developer_metrics обновлена (добавлены primary_language и language_count)")
+  message("Таблица developer_languages создана/обновлена")
   return(invisible(TRUE))
 }
 #' Получить базовую статистику по разработчику из витрины
