@@ -344,61 +344,6 @@ get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, unt
   list(by_hour = hour_data, peak_hours = peak_hours)
 }
 
-compare_with_team <- function(conn, author_name, team_usernames = NULL) {
-  if (missing(conn) || is.null(conn)) {
-    return(git_error("invalid_argument", "conn не может быть NULL"))
-  }
-  if (missing(author_name) || is.null(author_name) || author_name == "") {
-    return(git_error("invalid_argument", "author_name обязателен"))
-  }
-  
-  user <- tryCatch(
-    DBI::dbGetQuery(conn, sprintf("
-      SELECT total_commits, avg_commit_size, active_days 
-      FROM developer_metrics 
-      WHERE author_name = '%s'
-    ", gsub("'", "''", author_name))),
-    error = function(e) git_error("db_error", paste("Ошибка получения пользователя:", e$message))
-  )
-  if (is_git_error(user)) return(user)
-  if (nrow(user) == 0) {
-    return(git_error("no_developer_error", paste("Разработчик", author_name, "не найден")))
-  }
-  
-  if (!is.null(team_usernames) && length(team_usernames) > 0) {
-    names_quoted <- paste0("'", gsub("'", "''", team_usernames), "'", collapse = ", ")
-    team_query <- sprintf("
-      SELECT AVG(total_commits) as avg_commits, 
-             AVG(avg_commit_size) as avg_size, 
-             AVG(active_days) as avg_days
-      FROM developer_metrics
-      WHERE author_name IN (%s)
-    ", names_quoted)
-  } else {
-    team_query <- "
-      SELECT AVG(total_commits) as avg_commits, 
-             AVG(avg_commit_size) as avg_size, 
-             AVG(active_days) as avg_days
-      FROM developer_metrics
-    "
-  }
-  team <- tryCatch(
-    DBI::dbGetQuery(conn, team_query),
-    error = function(e) git_error("db_error", paste("Ошибка получения команды:", e$message))
-  )
-  if (is_git_error(team)) return(team)
-  
-  data.frame(
-    metric = c("Коммитов", "Средний размер", "Активных дней"),
-    developer = as.numeric(user[1, ]),
-    team_avg = as.numeric(team[1, ]),
-    diff_percent = round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1),
-    status = ifelse(abs(round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1)) > 20,
-                    ifelse(round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1) > 0,
-                           "выше среднего", "ниже среднего"), "в норме")
-  )
-}
-
 get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
