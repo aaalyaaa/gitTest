@@ -19,7 +19,9 @@ Imports:
     stringr,
     tidyr,
     gert,
-    tools
+    tools,
+    dbscan,
+    xgboost
 Suggests:
     testthat,
     knitr,

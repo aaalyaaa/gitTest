@@ -1,6 +1,6 @@
 # Общие утилиты и обнаружение аномалий
 
-#' Создание объекта ошибки (исходная версия, без изменений)
+#' Создание объекта ошибки
 git_error <- function(class, message, ...) {
   structure(list(message = message, ...), class = c(class, "error", "condition"))
 }
@@ -20,9 +20,8 @@ stop_if_error <- function(x, msg = NULL) {
   return(x)
 }
 
-
-#' Полное обнаружение всех видов аномалий
-get_all_anomalies <- function(conn, username = NULL, limit = 1000) {
+#' Полное обнаружение всех видов аномалий (с поддержкой периода)
+get_all_anomalies <- function(conn, username = NULL, limit = 1000, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
@@ -33,6 +32,8 @@ get_all_anomalies <- function(conn, username = NULL, limit = 1000) {
   safe_query <- function(sql_template, name, needs_where = TRUE) {
     where_part <- if (!is.null(username) && needs_where) 
       sprintf("AND author_name LIKE '%%%s%%'", username) else ""
+    if (!is.null(since)) where_part <- paste0(where_part, " AND date >= '", since, "'")
+    if (!is.null(until)) where_part <- paste0(where_part, " AND date <= '", until, "'")
     sql <- sprintf(sql_template, where_part)
     
     res <- tryCatch(
@@ -156,7 +157,6 @@ get_all_anomalies <- function(conn, username = NULL, limit = 1000) {
   pattern <- safe_query(pattern_sql, "pattern_changes")
   if (nrow(pattern) > 0) result <- rbind(result, pattern)
   
-  # Если нет ни одной записи, но были ошибки – возвращаем первую ошибку
   if (nrow(result) == 0 && length(errors) > 0) {
     return(errors[[1]])
   }
