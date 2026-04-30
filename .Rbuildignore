@@ -4,3 +4,4 @@
 ^\.Rbuildignore$
 ^\.github$
 ^docker$
+^data-raw$
