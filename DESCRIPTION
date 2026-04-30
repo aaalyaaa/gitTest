@@ -19,7 +19,8 @@ Imports:
     stringr,
     tidyr,
     gert,
-    tools
+    tools,
+    httr
 Suggests:
     testthat,
     knitr,

@@ -58,7 +58,9 @@ clone_or_pull <- function(mode, repo_url = NULL, clone_dir = NULL, local_path = 
                      url = repo_url))
     }
 
-    if (is.null(clone_dir)) clone_dir <- tempdir()
+    if (is.null(clone_dir)) {
+      stop(git_error("clone_dir_required_error", "clone_dir is required for mode = 1"))
+    }
 
     if (!dir.exists(clone_dir)) {
       stop(git_error("clone_dir_error", paste("Clone directory does not exist:", clone_dir), path = clone_dir))
@@ -77,6 +79,61 @@ clone_or_pull <- function(mode, repo_url = NULL, clone_dir = NULL, local_path = 
 
   stop("mode must be 0 (local) or 1 (remote)")
 }
+
+#' Get repository metadata from GitHub API
+#'
+#' @param owner Repository owner (username or organization)
+#' @param repo Repository name
+#' @param token GitHub personal access token (optional, for higher rate limits)
+#' @return List with repository metadata
+get_repo_metadata <- function(owner, repo, token = NULL) {
+  url <- sprintf("https://api.github.com/repos/%s/%s", owner, repo)
+
+  headers <- httr::add_headers("User-Agent" = "R-package")
+  if (!is.null(token)) {
+    headers <- httr::add_headers(Authorization = paste("token", token), "User-Agent" = "R-package")
+  }
+
+  response <- httr::GET(url, headers)
+
+  if (httr::http_error(response)) {
+    warning("GitHub API error: ", httr::http_status(response)$message, ". Using default values.")
+    return(NULL)
+  }
+
+  content <- httr::content(response, as = "parsed")
+
+  metadata <- list(
+    stars = content$stargazers_count %||% 0,
+    forks = content$forks_count %||% 0,
+    open_issues = content$open_issues_count %||% 0,
+    primary_language = content$language %||% NA_character_,
+    updated_at = content$updated_at %||% NA_character_,
+    pushed_at = content$pushed_at %||% NA_character_,
+    description = content$description %||% NA_character_,
+    license = content$license$name %||% NA_character_,
+    owner_login = content$owner$login %||% NA_character_
+  )
+
+  lang_url <- sprintf("https://api.github.com/repos/%s/%s/languages", owner, repo)
+  lang_response <- httr::GET(lang_url, headers)
+
+  if (!httr::http_error(lang_response)) {
+    lang_content <- httr::content(lang_response, as = "parsed")
+    all_languages <- paste(names(lang_content), collapse = ",")
+    metadata$all_languages <- all_languages
+  } else {
+    metadata$all_languages <- NA_character_
+  }
+
+  return(metadata)
+}
+
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) y else x
+}
+
+
 
 #' Get commit history from a Git repository
 #'
@@ -139,7 +196,7 @@ get_commit_history <- function(repo_path, repo_id, since = NULL) {
 get_commits <- function(repo_path) {
 
   con <- pipe(sprintf('git -C "%s" log -p --unified=0 -w --ignore-blank-lines', repo_path))
-  lines <- readLines(con)
+  lines <- readLines(con, encoding = "UTF-8", warn = FALSE)
   close(con)
 
   commit_starts <- grep("^commit ", lines)
@@ -332,6 +389,23 @@ init_db <- function(db_path = "git.duckdb") {
   ")
 
   DBI::dbExecute(con, "
+    CREATE TABLE IF NOT EXISTS repo_metadata (
+      repo_id INTEGER PRIMARY KEY,
+      stars INTEGER,
+      forks INTEGER,
+      open_issues INTEGER,
+      primary_language VARCHAR,
+      all_languages VARCHAR,
+      updated_at TIMESTAMP,
+      pushed_at TIMESTAMP,
+      description TEXT,
+      license VARCHAR,
+      owner_login VARCHAR,
+      FOREIGN KEY (repo_id) REFERENCES repo_path(id)
+    )
+  ")
+
+  DBI::dbExecute(con, "
     CREATE TABLE IF NOT EXISTS git_commit_history (
       repo_id INTEGER,
       commit VARCHAR(40) NOT NULL,
@@ -396,6 +470,59 @@ repo_id <- function(con, repo_name, repo_path) {
   ))
 
   return(new_id)
+}
+
+#' Save repository metadata to database
+#'
+#' @param con Database connection
+#' @param repo_id Repository ID
+#' @param owner Repository owner (username)
+#' @param repo Repository name
+#' @param token GitHub token (optional)
+save_repo_metadata <- function(con, repo_id, owner, repo, token = NULL) {
+  metadata <- get_repo_metadata(owner, repo, token)
+
+  if (is.null(metadata)) {
+    warning("Could not fetch metadata for ", owner, "/", repo)
+    return(invisible(FALSE))
+  }
+
+  safe_sql_string <- function(x) {
+    if (is.null(x) || length(x) == 0 || is.na(x)) {
+      return("NULL")
+    }
+    return(paste0("'", gsub("'", "''", as.character(x)), "'"))
+  }
+
+  safe_sql_int <- function(x) {
+    if (is.null(x) || length(x) == 0 || is.na(x)) {
+      return("NULL")
+    }
+    return(as.character(as.integer(x)))
+  }
+
+  sql <- sprintf(
+    "INSERT OR REPLACE INTO repo_metadata
+     (repo_id, stars, forks, open_issues, primary_language, all_languages,
+      updated_at, pushed_at, description, license, owner_login)
+     VALUES (%d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+    repo_id,
+    safe_sql_int(metadata$stars),
+    safe_sql_int(metadata$forks),
+    safe_sql_int(metadata$open_issues),
+    safe_sql_string(metadata$primary_language),
+    safe_sql_string(metadata$all_languages),
+    safe_sql_string(metadata$updated_at),
+    safe_sql_string(metadata$pushed_at),
+    safe_sql_string(metadata$description),
+    safe_sql_string(metadata$license),
+    safe_sql_string(metadata$owner_login)
+  )
+
+  DBI::dbExecute(con, sql)
+
+  message("Saved metadata for repository: ", owner, "/", repo)
+  invisible(TRUE)
 }
 
 #' Write data to database
@@ -471,11 +598,11 @@ write_repo_to_db <- function(con, repo_name, repo_path) {
 #' @param repo_url GitHub URL (for mode = 1)
 #' @param local_path Path to local repo (for mode = 0)
 #' @param clone_dir Directory for cloning (for mode = 1, optional)
-#' @param db_path Path to DuckDB database (default: "git.duckdb")
+#' @param github_token GitHub personal access token (optional, for higher rate limits)
 #' @return List with status, message, repo_path, and db_path
 #' @export
 run_etl_pipeline <- function(mode, repo_url = NULL, local_path = NULL,
-                             clone_dir = NULL, db_path = "git.duckdb") {
+                             clone_dir = NULL, github_token = NULL) {
 
   tryCatch({
     if (mode == 0) {
@@ -485,20 +612,33 @@ run_etl_pipeline <- function(mode, repo_url = NULL, local_path = NULL,
       repo_path <- clone_or_pull(mode = 0, local_path = local_path)
       repo_name <- basename(local_path)
 
+      owner <- NULL
+      repo_api_name <- NULL
+
     } else if (mode == 1) {
       if (is.null(repo_url)) {
         stop("repo_url is required for mode = 1")
       }
       repo_path <- clone_or_pull(mode = 1, repo_url = repo_url, clone_dir = clone_dir)
-      repo_name <- gsub(".*/(.+)\\.git$", "\\1", repo_url)
+      repo_name <- basename(repo_path)
+
+      api_url <- gsub("\\.git$", "", repo_url)
+      parts <- strsplit(api_url, "/")[[1]]
+      owner <- parts[length(parts) - 1]
+      repo_api_name <- parts[length(parts)]
 
     } else {
       stop("mode must be 0 (local) or 1 (remote)")
     }
 
-    con <- init_db(db_path)
+    con <- init_db("git.duckdb")
 
     write_repo_to_db(con, repo_name, repo_path)
+
+    if (mode == 1 && !is.null(owner) && !is.null(repo_api_name)) {
+      repo_id_value <- repo_id(con, repo_name, repo_path)
+      save_repo_metadata(con, repo_id_value, owner, repo_api_name, github_token)
+    }
 
     DBI::dbDisconnect(con, shutdown = TRUE)
 
@@ -506,7 +646,7 @@ run_etl_pipeline <- function(mode, repo_url = NULL, local_path = NULL,
       status = "success",
       message = sprintf("Repository '%s' successfully loaded", repo_name),
       repo_path = repo_path,
-      db_path = db_path
+      db_path = "git.duckdb"
     ))
 
   }, error = function(e) {
