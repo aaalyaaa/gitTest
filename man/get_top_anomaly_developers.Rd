@@ -2,10 +2,10 @@
 % Please edit documentation in R/anomalies_detection.R
 \name{get_top_anomaly_developers}
 \alias{get_top_anomaly_developers}
-\title{Топ разработчиков по аномалиям}
+\title{Топ разработчиков по количеству аномалий}
 \usage{
 get_top_anomaly_developers(anomalies, n = 5)
 }
 \description{
-Топ разработчиков по аномалиям
+Топ разработчиков по количеству аномалий
 }

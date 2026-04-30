@@ -9,7 +9,7 @@ run_etl_pipeline(
   repo_url = NULL,
   local_path = NULL,
   clone_dir = NULL,
-  db_path = "git.duckdb"
+  github_token = NULL
 )
 }
 \arguments{
@@ -21,7 +21,7 @@ run_etl_pipeline(
 
 \item{clone_dir}{Directory for cloning (for mode = 1, optional)}
 
-\item{db_path}{Path to DuckDB database (default: "git.duckdb")}
+\item{github_token}{GitHub personal access token (optional, for higher rate limits)}
 }
 \value{
 List with status, message, repo_path, and db_path

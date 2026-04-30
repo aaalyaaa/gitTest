@@ -2,18 +2,16 @@
 % Please edit documentation in R/anomalies_detection.R
 \name{get_all_anomalies}
 \alias{get_all_anomalies}
-\title{Обнаружение аномалий в Git-активности
-Полное обнаружение всех видов аномалий}
+\title{Полное обнаружение всех видов аномалий (с поддержкой периода)}
 \usage{
-get_all_anomalies(conn)
-}
-\arguments{
-\item{conn}{Подключение к базе данных DuckDB}
-}
-\value{
-data.frame со всеми аномалиями
+get_all_anomalies(
+  conn,
+  username = NULL,
+  limit = 1000,
+  since = NULL,
+  until = NULL
+)
 }
 \description{
-Обнаружение аномалий в Git-активности
-Полное обнаружение всех видов аномалий
+Полное обнаружение всех видов аномалий (с поддержкой периода)
 }

@@ -262,8 +262,17 @@ parse_commit <- function(block, repo_id) {
     if (is.na(src_line) || is.na(dst_line)) next
 
     src_file <- sub("^--- a/", "", src_line)
-    src_file <- sub("^--- /dev/null", NA_character_, src_file)
+    if (grepl("/dev/null", src_file)) {
+      src_file <- NA_character_
+    }
+
     dst_file <- sub("^\\+\\+\\+ b/", "", dst_line)
+    if (grepl("^\\+\\+\\+ ", dst_file)) {
+      dst_file <- sub("^\\+\\+\\+ ", "", dst_file)
+    }
+    if (!is.na(dst_file) && dst_file == "/dev/null") {
+      dst_file <- NA_character_
+    }
 
     file_for_ext <- ifelse(!is.na(dst_file), dst_file, src_file)
     if (is.na(file_for_ext)) {
@@ -522,6 +531,40 @@ save_repo_metadata <- function(con, repo_id, owner, repo, token = NULL) {
   DBI::dbExecute(con, sql)
 
   message("Saved metadata for repository: ", owner, "/", repo)
+  invisible(TRUE)
+}
+
+#' Delete a repository from the database
+#'
+#' Removes all data associated with a repository from all tables:
+#' - git_file_changes
+#' - git_commit_history
+#' - repo_metadata
+#' - repo_path
+#'
+#' @param repo_name Name of the repository to delete
+#' @return Invisibly returns TRUE if deleted, FALSE if not found
+delete_repository <- function(repo_name) {
+  con <- DBI::dbConnect(duckdb::duckdb(), "git.duckdb")
+  on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
+
+  repo_id_value <- DBI::dbGetQuery(con, sprintf(
+    "SELECT id FROM repo_path WHERE repo = '%s'", repo_name
+  ))
+
+  if (nrow(repo_id_value) == 0) {
+    warning("Repository '", repo_name, "' not found in database")
+    return(invisible(FALSE))
+  }
+
+  repo_id <- repo_id_value$id[1]
+
+  DBI::dbExecute(con, sprintf("DELETE FROM git_file_changes WHERE repo_id = %d", repo_id))
+  DBI::dbExecute(con, sprintf("DELETE FROM git_commit_history WHERE repo_id = %d", repo_id))
+  DBI::dbExecute(con, sprintf("DELETE FROM repo_metadata WHERE repo_id = %d", repo_id))
+  DBI::dbExecute(con, sprintf("DELETE FROM repo_path WHERE id = %d", repo_id))
+
+  message("Repository '", repo_name, "' deleted successfully")
   invisible(TRUE)
 }
 
