@@ -1,11 +1,12 @@
+# metrics.R
 # Единый источник метрик разработчиков
 
-#' Обновить таблицу developer_metrics (витрина метрик)
 refresh_developer_metrics <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
   DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_metrics")
+  DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_languages")
   
   DBI::dbExecute(conn, "
     CREATE TABLE developer_metrics (
@@ -30,15 +31,29 @@ refresh_developer_metrics <- function(conn) {
       avg_add_per_commit REAL,
       avg_del_per_commit REAL,
       primary_language VARCHAR,
+      secondary_language VARCHAR,
       language_count INTEGER
     )
   ")
   
-  query <- "
+  # Белый список языков (расширения файлов) – максимально полный
+  lang_whitelist <- c(
+    "c", "cpp", "cxx", "cc", "c++", "h", "hpp", "hxx", "cs", "java", 
+    "py", "python", "go", "rb", "php", "scala", "kt", "kts", "swift", 
+    "rs", "r", "jl", "ex", "exs", "erl", "hrl", "m", "mm", "ps1", "groovy",
+    "sql", "rql", "plpgsql",
+    "js", "ts", "jsx", "tsx", "vue", "svelte", "html", "htm", 
+    "css", "scss", "sass", "less", "styl", "xml", "svg", "wasm",
+    "hcl", "tf", "yaml", "yml", "dockerfile", "makefile", "cmake",
+    "dart", "objective-c",
+    "lua", "hlsl", "glsl", "shader",
+    "ipynb", "matlab",
+    "purs", "nim", "zig", "v", "odin"
+  )
+  lang_list <- paste0("'", lang_whitelist, "'", collapse = ",")
+  
+  query <- sprintf("
     WITH 
-    total_commits_all AS (
-      SELECT COUNT(*) AS total FROM git_commit_history
-    ),
     base AS (
       SELECT 
         author_name,
@@ -97,22 +112,40 @@ refresh_developer_metrics <- function(conn) {
       ) t
       GROUP BY author_name
     ),
-    language_stats AS (
+    lang_stats AS (
       SELECT 
         author_name,
-        FIRST_VALUE(file_extension) OVER (PARTITION BY author_name ORDER BY cnt DESC) AS primary_language,
+        MAX(CASE WHEN lang_rank = 1 THEN file_extension END) AS primary_language,
+        MAX(CASE WHEN lang_rank = 2 THEN file_extension END) AS secondary_language,
         COUNT(DISTINCT file_extension) AS language_count
       FROM (
         SELECT 
           c.author_name,
           d.file_extension,
-          COUNT(*) AS cnt
+          COUNT(*) AS cnt,
+          ROW_NUMBER() OVER (PARTITION BY c.author_name ORDER BY COUNT(*) DESC) AS lang_rank
         FROM git_commit_history c
         JOIN git_file_changes d ON c.commit = d.commit
         WHERE d.file_extension IS NOT NULL AND d.file_extension != ''
+          AND d.file_extension IN (%s)
         GROUP BY c.author_name, d.file_extension
-      ) lang
+      ) t
       GROUP BY author_name
+    ),
+    author_repo_total AS (
+      SELECT 
+        c.author_name,
+        SUM(repo_stats.total_commits_in_repo) AS total_commits_in_my_repos
+      FROM (
+        SELECT DISTINCT author_name, repo_id
+        FROM git_commit_history
+      ) c
+      JOIN (
+        SELECT repo_id, COUNT(*) AS total_commits_in_repo
+        FROM git_commit_history
+        GROUP BY repo_id
+      ) repo_stats ON c.repo_id = repo_stats.repo_id
+      GROUP BY c.author_name
     )
     INSERT INTO developer_metrics
     SELECT 
@@ -129,7 +162,7 @@ refresh_developer_metrics <- function(conn) {
       COALESCE(cc.avg_commit_size, 0) AS avg_commit_size,
       COALESCE(cc.unique_files, 0) AS unique_files,
       cg.avg_time_between_commits,
-      ROUND(1.0 * b.total_commits / NULLIF((SELECT total FROM total_commits_all), 0), 4) AS contribution_share,
+      ROUND(1.0 * b.total_commits / NULLIF(art.total_commits_in_my_repos, 0), 4) AS contribution_share,
       COALESCE(mt.prev_month_commits, 0) AS prev_month_commits,
       COALESCE(mt.current_month_commits, 0) AS current_month_commits,
       CASE 
@@ -141,13 +174,15 @@ refresh_developer_metrics <- function(conn) {
       COALESCE(cc.avg_add_per_commit, 0) AS avg_add_per_commit,
       COALESCE(cc.avg_del_per_commit, 0) AS avg_del_per_commit,
       COALESCE(ls.primary_language, 'unknown') AS primary_language,
+      COALESCE(ls.secondary_language, '') AS secondary_language,
       COALESCE(ls.language_count, 0) AS language_count
     FROM base b
     LEFT JOIN code_changes cc ON b.author_name = cc.author_name
     LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
     LEFT JOIN monthly_trend mt ON b.author_name = mt.author_name
-    LEFT JOIN language_stats ls ON b.author_name = ls.author_name
-  "
+    LEFT JOIN lang_stats ls ON b.author_name = ls.author_name
+    LEFT JOIN author_repo_total art ON b.author_name = art.author_name
+  ", lang_list)
   
   result <- tryCatch(
     DBI::dbExecute(conn, query),
@@ -155,8 +190,7 @@ refresh_developer_metrics <- function(conn) {
   )
   if (is_git_error(result)) return(result)
   
-  # Шаг 2. Создаём отдельную таблицу developer_languages для гибкости
-  DBI::dbExecute(conn, "DROP TABLE IF EXISTS developer_languages")
+  # Таблица со всеми языками (включая не из белого списка)
   DBI::dbExecute(conn, "
     CREATE TABLE developer_languages AS
     SELECT 
@@ -175,11 +209,11 @@ refresh_developer_metrics <- function(conn) {
     GROUP BY author_name, file_extension
   ")
   
-  message("Таблица developer_metrics обновлена (добавлены primary_language и language_count)")
-  message("Таблица developer_languages создана/обновлена")
+  message("Таблица developer_metrics обновлена")
+  message("Таблица developer_languages создана")
   return(invisible(TRUE))
 }
-#' Получить базовую статистику по разработчику из витрины
+
 get_developer_stats <- function(conn, username = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -198,7 +232,6 @@ get_developer_stats <- function(conn, username = NULL) {
   return(result)
 }
 
-#' Сводная статистика по команде
 get_summary_stats <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -233,65 +266,84 @@ get_summary_stats <- function(conn) {
   list(overview = overview, top_5_developers = top5)
 }
 
-#' Получить командные метрики
-get_team_metrics <- function(conn) {
+#' Получить метрики команды (можно фильтровать по списку имён)
+get_team_metrics <- function(conn, usernames = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
-  df <- tryCatch(
-    DBI::dbGetQuery(conn, "
-      SELECT 
-        author_name,
-        total_commits,
-        active_days,
-        total_commits / NULLIF(active_days, 0) AS commits_per_day,
-        avg_commit_size,
-        unique_files,
-        night_commits,
-        weekend_commits,
-        avg_time_between_commits,
-        contribution_share,
-        current_month_commits,
-        prev_month_commits,
-        trend_direction
-      FROM developer_metrics
-      ORDER BY total_commits DESC
-    "),
+  where_clause <- ""
+  if (!is.null(usernames) && length(usernames) > 0) {
+    names_quoted <- paste0("'", gsub("'", "''", usernames), "'", collapse = ", ")
+    where_clause <- paste0("WHERE author_name IN (", names_quoted, ")")
+  }
+  query <- sprintf("
+    SELECT 
+      author_name,
+      total_commits,
+      active_days,
+      total_commits / NULLIF(active_days, 0) AS commits_per_day,
+      avg_commit_size,
+      unique_files,
+      night_commits,
+      weekend_commits,
+      avg_time_between_commits,
+      contribution_share,
+      current_month_commits,
+      prev_month_commits,
+      trend_direction,
+      primary_language,
+      secondary_language
+    FROM developer_metrics
+    %s
+    ORDER BY total_commits DESC
+  ", where_clause)
+  result <- tryCatch(
+    DBI::dbGetQuery(conn, query),
     error = function(e) git_error("db_error", paste("Ошибка получения командных метрик:", e$message))
   )
-  if (is_git_error(df)) return(df)
-  
-  if (nrow(df) > 0) {
-    df$productivity_level <- cut(df$commits_per_day,
-                                 breaks = c(-Inf, 0.5, 1.5, 3, Inf),
-                                 labels = c("низкая", "средняя", "высокая", "очень высокая"))
-  }
-  df
+  if (is_git_error(result)) return(result)
+  return(result)
 }
 
-#' Оценка рисков команды
-#' Оценка рисков команды (без burnout_risk и bug_risk)
-get_team_risks <- function(conn) {
+get_team_metrics_period <- function(conn, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
-  df <- tryCatch(
-    DBI::dbGetQuery(conn, "
-      SELECT 
-        author_name,
-        total_commits,
-        night_commits,
-        weekend_commits,
-        total_commits / NULLIF(active_days, 0) AS commits_per_day,
-        avg_time_between_commits
-      FROM developer_metrics
-    "),
-    error = function(e) git_error("db_error", paste("Ошибка оценки рисков:", e$message))
-  )
-  if (is_git_error(df)) return(df)
+  where <- ""
+  if (!is.null(since)) where <- paste0(where, " AND date >= '", since, "'")
+  if (!is.null(until)) where <- paste0(where, " AND date <= '", until, "'")
+  if (where != "") where <- paste0("WHERE", substr(where, 5))
+  else where <- "WHERE 1=1"
   
-  if (nrow(df) > 0) {
-    df <- df[, c("author_name", "total_commits", "avg_time_between_commits")]
-  }
-  df
+  query <- sprintf("
+    WITH author_daily AS (
+      SELECT author_name, date::DATE AS day, COUNT(*) AS commits
+      FROM git_commit_history
+      %s
+      GROUP BY author_name, date::DATE
+    ),
+    author_stats AS (
+      SELECT
+        author_name,
+        SUM(commits) AS total_commits,
+        COUNT(DISTINCT day) AS active_days,
+        AVG(commits) AS avg_commits_per_day
+      FROM author_daily
+      GROUP BY author_name
+    )
+    SELECT
+      author_name,
+      total_commits,
+      active_days,
+      total_commits / NULLIF(active_days, 0) AS commits_per_day
+    FROM author_stats
+    ORDER BY total_commits DESC
+  ", where)
+  
+  result <- tryCatch(
+    DBI::dbGetQuery(conn, query),
+    error = function(e) git_error("db_error", paste("Ошибка командных метрик за период:", e$message))
+  )
+  if (is_git_error(result)) return(result)
+  return(result)
 }

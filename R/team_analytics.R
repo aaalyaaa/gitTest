@@ -1,4 +1,5 @@
-#' Получить профиль разработчика
+# team_analytics.R
+
 get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(list(error = "conn не может быть NULL"))
@@ -15,28 +16,9 @@ get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL
     return(list(error = paste("Разработчик", author_name, "не найден")))
   }
   
-  if (!is.null(precomputed_clusters) && !is_git_error(precomputed_clusters)) {
-    clusters <- precomputed_clusters
-  } else {
-    clusters <- tryCatch(cluster_developers(conn), error = function(e) NULL)
-  }
-  cluster_type <- NA
-  if (!is.null(clusters) && !is_git_error(clusters) && nrow(clusters$data) > 0) {
-    match <- clusters$data[clusters$data$author_name == author_name, "cluster_type"]
-    if (length(match) > 0) cluster_type <- as.character(match[1])
-  }
-  
-  langs <- tryCatch({
-    query <- sprintf("
-      SELECT d.file_extension, COUNT(*) as cnt
-      FROM git_commit_history c 
-      JOIN git_file_changes d ON c.commit = d.commit
-      WHERE c.author_name = '%s' AND d.file_extension != ''
-      GROUP BY d.file_extension ORDER BY cnt DESC LIMIT 1
-    ", author_name)
-    DBI::dbGetQuery(conn, query)
-  }, error = function(e) data.frame())
-  main_lang <- if (nrow(langs) > 0) langs$file_extension[1] else "unknown"
+  primary_lang <- stats$primary_language[1]
+  secondary_lang <- stats$secondary_language[1]
+  if (is.na(secondary_lang) || secondary_lang == "") secondary_lang <- "нет"
   
   season <- tryCatch(get_activity_seasonality(conn, author_name = author_name), error = function(e) NULL)
   work_style <- "unknown"
@@ -57,131 +39,247 @@ get_developer_profile <- function(conn, author_name, precomputed_clusters = NULL
     else contribution <- "medium"
   }
   
-  role <- switch(cluster_type,
-                 "Ночной трудоголик" = "Ведущий разработчик (нестандартный график)",
-                 "Активный разработчик" = "Лидер / core contributor",
-                 "Многофайловый" = "Архитектор / интегратор систем",
-                 "Низкоактивный ночной" = "Эксперт в узкой области (ночная работа)",
-                 "Стабильный специалист" = "Стабильный исполнитель / поддержка",
-                 "Разработчик")
-  
-  
   list(
-    name = author_name, role = role, main_language = main_lang,
-    work_style = work_style, contribution = contribution,
+    name = author_name,
+    main_language = primary_lang,
+    second_language = secondary_lang,
+    work_style = work_style,
+    contribution = contribution,
     total_commits = stats$total_commits[1],
-    active_days = stats$active_days[1],
-    cluster = cluster_type
+    active_days = stats$active_days[1]
   )
 }
-project_languages <- list(
-  web        = c("js", "ts", "html", "css", "vue", "react", "jsx", "tsx"),
-  backend    = c("go", "python", "java", "kotlin", "csharp", "php", "ruby", "scala"),
-  data_science = c("python", "r", "sql", "julia", "scala"),
-  mobile     = c("swift", "kotlin", "java", "dart", "objective-c"),
-  devops     = c("go", "python", "ruby", "hcl", "yaml", "sh", "groovy"),
-  game_dev   = c("cpp", "csharp", "lua", "python", "c"),
-  frontend   = c("js", "ts", "html", "css", "scss", "less"),
-  fullstack  = c("js", "ts", "python", "java", "go", "php", "ruby")
-)
-recommend_team <- function(conn, project_type = "generic", team_size = 5, required_languages = NULL) {
+
+compare_with_team <- function(conn, author_name, team_usernames = NULL) {
+  if (missing(conn) || is.null(conn)) {
+    return(git_error("invalid_argument", "conn не может быть NULL"))
+  }
+  if (missing(author_name) || is.null(author_name) || author_name == "") {
+    return(git_error("invalid_argument", "author_name обязателен"))
+  }
+  
+  user <- tryCatch(
+    DBI::dbGetQuery(conn, sprintf("
+      SELECT total_commits, avg_commit_size, active_days 
+      FROM developer_metrics 
+      WHERE author_name = '%s'
+    ", gsub("'", "''", author_name))),
+    error = function(e) git_error("db_error", paste("Ошибка получения пользователя:", e$message))
+  )
+  if (is_git_error(user)) return(user)
+  if (nrow(user) == 0) {
+    return(git_error("no_developer_error", paste("Разработчик", author_name, "не найден")))
+  }
+  
+  if (!is.null(team_usernames) && length(team_usernames) > 0) {
+    names_quoted <- paste0("'", gsub("'", "''", team_usernames), "'", collapse = ", ")
+    team_query <- sprintf("
+      SELECT AVG(total_commits) as avg_commits, 
+             AVG(avg_commit_size) as avg_size, 
+             AVG(active_days) as avg_days
+      FROM developer_metrics
+      WHERE author_name IN (%s)
+    ", names_quoted)
+  } else {
+    team_query <- "
+      SELECT AVG(total_commits) as avg_commits, 
+             AVG(avg_commit_size) as avg_size, 
+             AVG(active_days) as avg_days
+      FROM developer_metrics
+    "
+  }
+  team <- tryCatch(
+    DBI::dbGetQuery(conn, team_query),
+    error = function(e) git_error("db_error", paste("Ошибка получения команды:", e$message))
+  )
+  if (is_git_error(team)) return(team)
+  
+  data.frame(
+    metric = c("Коммитов", "Средний размер", "Активных дней"),
+    developer = as.numeric(user[1, ]),
+    team_avg = as.numeric(team[1, ]),
+    diff_percent = round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1),
+    status = ifelse(abs(round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1)) > 20,
+                    ifelse(round(100 * (as.numeric(user[1, ]) - as.numeric(team[1, ])) / as.numeric(team[1, ]), 1) > 0,
+                           "выше среднего", "ниже среднего"), "в норме")
+  )
+}
+
+#' Рекомендация команды (с проверкой всех языков через developer_languages)
+recommend_team <- function(conn, project_type = "generic", team_size = 5, 
+                           required_languages = NULL, since_date = NULL,
+                           mode = c("balanced", "language", "productivity", "recent")) {
+  
   if (missing(conn) || is.null(conn)) {
     cat("Ошибка: conn не может быть NULL\n")
     return(NULL)
   }
   
-  clusters <- cluster_developers(conn)
-  if (is_git_error(clusters)) {
-    cat("Ошибка кластеризации:", clusters$message, "\n")
-    return(NULL)
-  }
-  devs <- clusters$data
-  if (nrow(devs) < team_size) {
-    cat("Доступно только", nrow(devs), "разработчиков. Уменьшаем размер команды.\n")
-    team_size <- nrow(devs)
+  mode <- match.arg(mode)
+  
+  weights_base <- switch(mode,
+                         balanced = c(lang = 0.3125, recent = 0.3125, scope = 0.125, productivity = 0.25),
+                         language = c(lang = 0.70, recent = 0.10, scope = 0.10, productivity = 0.10),
+                         productivity = c(lang = 0.10, recent = 0.15, scope = 0.10, productivity = 0.65),
+                         recent = c(lang = 0.10, recent = 0.60, scope = 0.10, productivity = 0.20)
+  )
+  
+  compatibility_weight <- switch(mode,
+                                 balanced = 0.20,
+                                 language = 0.05,
+                                 productivity = 0.10,
+                                 recent = 0.10
+  )
+  
+  if (is.null(required_languages)) {
+    project_languages <- list(
+      web = c("js", "ts", "html", "css", "vue", "react", "jsx", "tsx"),
+      backend = c("go", "python", "java", "kotlin", "csharp", "php", "ruby", "scala"),
+      data_science = c("python", "r", "sql", "julia", "scala"),
+      mobile = c("swift", "kotlin", "java", "dart", "objective-c"),
+      devops = c("go", "python", "ruby", "hcl", "yaml", "sh", "groovy"),
+      game_dev = c("cpp", "csharp", "lua", "python", "c"),
+      frontend = c("js", "ts", "html", "css", "scss", "less"),
+      fullstack = c("js", "ts", "python", "java", "go", "php", "ruby")
+    )
+    required_languages <- project_languages[[project_type]]
+    if (is.null(required_languages)) required_languages <- c("python", "js", "go")
   }
   
-  # Фильтрация по языкам
-  if (!is.null(required_languages) && length(required_languages) > 0) {
-    lang_query <- "
-      SELECT author_name, primary_language
+  if (is.null(since_date)) {
+    since_date <- Sys.Date() - 90
+  }
+  
+  # 1. Получаем всех разработчиков из витрины
+  devs <- tryCatch(
+    DBI::dbGetQuery(conn, "
+      SELECT author_name, total_commits, active_days, repos_count, 
+             total_added, total_deleted, avg_commit_size,
+             primary_language, secondary_language
       FROM developer_metrics
-      WHERE primary_language IS NOT NULL AND primary_language != 'unknown'
-    "
-    dev_langs <- DBI::dbGetQuery(conn, lang_query)
-    valid_devs <- dev_langs[dev_langs$primary_language %in% required_languages, "author_name"]
-    devs <- devs[devs$author_name %in% valid_devs, ]
-    
-    if (nrow(devs) == 0) {
-      cat("Нет разработчиков с требуемыми языками:", paste(required_languages, collapse = ", "), "\n")
+    "),
+    error = function(e) {
+      cat("Ошибка получения данных разработчиков:", e$message, "\n")
       return(NULL)
     }
-    if (nrow(devs) < team_size) {
-      cat(sprintf("Только %d разработчиков владеют нужными языками (%s). Уменьшаем размер команды до %d.\n", 
-                  nrow(devs), paste(required_languages, collapse = ", "), nrow(devs)))
-      team_size <- nrow(devs)
-    }
+  )
+  if (is.null(devs) || nrow(devs) == 0) {
+    cat("Нет данных о разработчиках\n")
+    return(NULL)
   }
   
-  role_targets <- list(
-    web = c("Активный разработчик" = 0.4, "Многофайловый" = 0.2, "Стабильный специалист" = 0.2, "Низкоактивный ночной" = 0.1, "Ночной трудоголик" = 0.1),
-    backend = c("Активный разработчик" = 0.3, "Многофайловый" = 0.3, "Ночной трудоголик" = 0.2, "Стабильный специалист" = 0.1, "Низкоактивный ночной" = 0.1),
-    data_science = c("Ночной трудоголик" = 0.4, "Активный разработчик" = 0.3, "Многофайловый" = 0.2, "Стабильный специалист" = 0.1, "Низкоактивный ночной" = 0.0),
-    mobile = c("Активный разработчик" = 0.5, "Стабильный специалист" = 0.3, "Низкоактивный ночной" = 0.1, "Многофайловый" = 0.1, "Ночной трудоголик" = 0.0),
-    devops = c("Многофайловый" = 0.4, "Активный разработчик" = 0.3, "Ночной трудоголик" = 0.2, "Низкоактивный ночной" = 0.1, "Стабильный специалист" = 0.0),
-    game_dev = c("Активный разработчик" = 0.35, "Ночной трудоголик" = 0.35, "Многофайловый" = 0.2, "Низкоактивный ночной" = 0.1, "Стабильный специалист" = 0.0),
-    frontend = c("Активный разработчик" = 0.4, "Стабильный специалист" = 0.3, "Ночной трудоголик" = 0.1, "Многофайловый" = 0.1, "Низкоактивный ночной" = 0.1),
-    fullstack = c("Активный разработчик" = 0.35, "Стабильный специалист" = 0.25, "Многофайловый" = 0.2, "Ночной трудоголик" = 0.1, "Низкоактивный ночной" = 0.1)
-  )
-  targets <- role_targets[[project_type]]
-  if (is.null(targets)) targets <- role_targets[["web"]]
+  # 2. Фильтр по языку через таблицу developer_languages (все языки)
+  all_langs <- DBI::dbGetQuery(conn, "
+    SELECT author_name, file_extension
+    FROM developer_languages
+  ")
+  author_all_langs <- split(all_langs$file_extension, all_langs$author_name)
   
+  lang_match <- sapply(devs$author_name, function(author) {
+    langs <- author_all_langs[[author]]
+    if (is.null(langs)) return(FALSE)
+    any(langs %in% required_languages)
+  })
+  devs <- devs[lang_match, ]
+  if (nrow(devs) == 0) {
+    cat("Нет разработчиков с требуемыми языками:", paste(required_languages, collapse = ", "), "\n")
+    return(NULL)
+  }
+  
+  # 3. Активность за последние 3 месяца
+  active_query <- sprintf("
+    SELECT author_name, COUNT(*) AS recent_commits
+    FROM git_commit_history
+    WHERE date >= '%s'
+    GROUP BY author_name
+  ", since_date)
+  recent <- tryCatch(
+    DBI::dbGetQuery(conn, active_query),
+    error = function(e) {
+      cat("Ошибка получения активности за период:", e$message, "\n")
+      return(data.frame(author_name = character(), recent_commits = numeric()))
+    }
+  )
+  devs$recent_commits <- ifelse(devs$author_name %in% recent$author_name, 
+                                recent$recent_commits[match(devs$author_name, recent$author_name)], 0)
+  devs$active_recent <- as.numeric(devs$recent_commits > 0)
+  
+  # 4. Широта опыта
+  max_repos <- max(devs$repos_count, na.rm = TRUE)
+  devs$scope_score <- ifelse(max_repos > 0, devs$repos_count / max_repos, 0)
+  
+  # 5. Продуктивность
+  devs$productivity_raw <- devs$total_added * (devs$total_commits / pmax(devs$active_days, 1))
+  max_prod <- max(devs$productivity_raw, na.rm = TRUE)
+  devs$productivity_score <- ifelse(max_prod > 0, devs$productivity_raw / max_prod, 0)
+  
+  # 6. Базовый балл (вес языка = 1, т.к. язык уже отфильтрован)
+  devs$base_score <- weights_base["lang"] * 1 + 
+    weights_base["recent"] * devs$active_recent +
+    weights_base["scope"] * devs$scope_score +
+    weights_base["productivity"] * devs$productivity_score
+  
+  # 7. Данные для совместимости (общие репозитории)
+  repos_data <- DBI::dbGetQuery(conn, "
+    SELECT DISTINCT author_name, repo_id
+    FROM git_commit_history
+  ")
+  author_repos <- split(repos_data$repo_id, repos_data$author_name)
+  
+  compute_compatibility <- function(candidate_name, selected_names) {
+    if (length(selected_names) == 0) return(0)
+    candidate_repos <- author_repos[[candidate_name]]
+    if (is.null(candidate_repos) || length(candidate_repos) == 0) return(0)
+    compat_sum <- 0
+    for (sel in selected_names) {
+      sel_repos <- author_repos[[sel]]
+      if (!is.null(sel_repos)) {
+        common <- length(intersect(candidate_repos, sel_repos))
+        compat_sum <- compat_sum + common
+      }
+    }
+    compat_sum / length(selected_names)
+  }
+  
+  # 8. Итеративный отбор
   selected <- c()
-  for (role in names(targets)) {
-    candidates <- devs[devs$cluster_type == role, ]
-    n_needed <- round(team_size * targets[role])
-    if (n_needed > 0 && nrow(candidates) > 0) {
-      chosen <- head(candidates[order(-candidates$total_commits), "author_name"], n_needed)
-      selected <- c(selected, chosen)
-    }
-  }
-  if (length(selected) < team_size) {
-    remaining <- devs[!devs$author_name %in% selected, ]
-    remaining <- remaining[order(-remaining$total_commits), "author_name"]
-    selected <- c(selected, head(remaining, team_size - length(selected)))
+  remaining <- devs
+  total_weight <- 1 - compatibility_weight
+  for (i in 1:team_size) {
+    if (nrow(remaining) == 0) break
+    candidate_scores <- sapply(1:nrow(remaining), function(j) {
+      base <- remaining$base_score[j]
+      compat <- compute_compatibility(remaining$author_name[j], selected)
+      total <- total_weight * base + compatibility_weight * compat
+      return(total)
+    })
+    best_idx <- which.max(candidate_scores)
+    best <- remaining[best_idx, ]
+    selected <- c(selected, best$author_name)
+    remaining <- remaining[-best_idx, ]
   }
   
-  result <- data.frame(
-    author_name = selected,
-    role = devs$cluster_type[match(selected, devs$author_name)],
-    commits = devs$total_commits[match(selected, devs$author_name)]
-  )
-  
-  # Добавляем основной язык
-  langs_info <- DBI::dbGetQuery(conn, sprintf("
-    SELECT author_name, primary_language 
-    FROM developer_metrics 
-    WHERE author_name IN (%s)
-  ", paste(sprintf("'%s'", selected), collapse = ",")))
-  result$primary_language <- langs_info$primary_language[match(result$author_name, langs_info$author_name)]
-  
-  cat("\n=== Рекомендуемый состав для проекта: ", project_type, " ===\n", sep = "")
-  if (!is.null(required_languages)) {
-    cat("Фильтр по языкам:", paste(required_languages, collapse = ", "), "\n")
+  # 9. Результат
+  result <- devs[devs$author_name %in% selected, 
+                 c("author_name", "primary_language", "secondary_language", 
+                   "total_commits", "total_added", "repos_count", "recent_commits")]
+  result$score <- NA
+  for (nm in selected) {
+    result$score[result$author_name == nm] <- devs$base_score[devs$author_name == nm]
   }
-  cat("Размер команды:", team_size, "\n")
-  print(result[, c("author_name", "role", "primary_language", "commits")])
-  cat("\n--- Сводка по ролям ---\n")
-  print(table(result$role))
-  cat("\n--- Языки команды ---\n")
-  print(table(result$primary_language))
-  cat("\nСовместимость команды:\n")
-  cat("- Разнообразие ролей:", length(unique(result$role)), "из", length(names(targets)), "\n")
-  cat("- Средняя продуктивность:", round(mean(result$commits)), "коммитов\n")
-  invisible(result)
+  names(result)[7] <- "recent_commits"
+  
+  result_list <- list(team = result, usernames = selected)
+  cat("\n=== Рекомендуемый состав команды ===\n")
+  cat("Режим приоритета:", mode, "\n")
+  cat("Вес совместимости:", compatibility_weight, "\n")
+  cat("Требуемые языки:", paste(required_languages, collapse = ", "), "\n")
+  cat("Период активности: с", since_date, "\n")
+  cat("Размер команды:", length(selected), "\n")
+  print(result)
+  invisible(result_list)
 }
 
-#' Сводный отчёт по команде
 print_team_report <- function(conn, include_anomalies = FALSE) {
   if (missing(conn) || is.null(conn)) {
     cat("Ошибка: conn не может быть NULL\n")
@@ -202,7 +300,7 @@ print_team_report <- function(conn, include_anomalies = FALSE) {
   metrics <- get_team_metrics(conn)
   if (!is_git_error(metrics) && nrow(metrics) > 0) {
     cat("\nПродуктивность\n")
-    print(metrics[, c("author_name", "total_commits", "commits_per_day", "productivity_level", "trend_direction")])
+    print(metrics[, c("author_name", "total_commits", "commits_per_day", "trend_direction")])
   } else if (is_git_error(metrics)) {
     cat("Ошибка получения метрик:", metrics$message, "\n")
   }
