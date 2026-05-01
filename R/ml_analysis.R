@@ -1,125 +1,7 @@
 # ml_analysis.R
 library(forecast)
-library(cluster)
 
-# ---- Подготовка данных для кластеризации (общая) ----
-prepare_clustering_data <- function(conn, since = NULL, until = NULL) {
-  if (missing(conn) || is.null(conn)) {
-    return(git_error("invalid_argument", "conn не может быть NULL"))
-  }
-  query <- "
-    SELECT 
-        author_name,
-        total_commits,
-        active_days,
-        avg_commit_hour,
-        night_commits,
-        total_added,
-        total_deleted,
-        avg_add_per_commit,
-        avg_del_per_commit,
-        unique_files
-    FROM developer_metrics
-  "
-  df <- tryCatch(
-    DBI::dbGetQuery(conn, query),
-    error = function(e) git_error("db_error", paste("Ошибка подготовки данных:", e$message))
-  )
-  if (is_git_error(df)) return(df)
-  if (nrow(df) == 0) {
-    return(git_error("no_data_error", "Нет данных для ML анализа"))
-  }
-  
-  df_scaled <- df
-  numeric_cols <- c("total_commits", "active_days", "avg_commit_hour", "night_commits",
-                    "total_added", "total_deleted", "avg_add_per_commit", "avg_del_per_commit",
-                    "unique_files")
-  for (col in numeric_cols) {
-    if (sd(df[[col]], na.rm = TRUE) > 0) {
-      df_scaled[[col]] <- scale(df[[col]])
-    } else {
-      df_scaled[[col]] <- 0
-    }
-  }
-  list(data = df, scaled = df_scaled, features = numeric_cols)
-}
-
-# ---- DBSCAN кластеризация ----
-cluster_developers_dbscan <- function(conn, eps = 1.5, minPts = 3) {
-  if (missing(conn) || is.null(conn)) {
-    return(git_error("invalid_argument", "conn не может быть NULL"))
-  }
-  ml_data <- prepare_clustering_data(conn)
-  if (is_git_error(ml_data)) return(ml_data)
-  
-  dev_count <- nrow(ml_data$data)
-  if (dev_count < 3) {
-    return(git_error("insufficient_data_error", 
-                     sprintf("Недостаточно разработчиков для кластеризации (требуется минимум 3, найдено %d)", dev_count)))
-  }
-  
-  df_scaled <- ml_data$scaled[, ml_data$features, drop = FALSE]
-  df_scaled <- df_scaled[complete.cases(df_scaled), ]
-  if (nrow(df_scaled) < 3) {
-    return(git_error("insufficient_data_error", 
-                     "Недостаточно полных данных после очистки (требуется минимум 3)"))
-  }
-  
-  if (!requireNamespace("dbscan", quietly = TRUE)) {
-    return(git_error("missing_package", "Пакет 'dbscan' не установлен. Установите: install.packages('dbscan')"))
-  }
-  
-  dbscan_result <- tryCatch(
-    dbscan::dbscan(df_scaled, eps = eps, minPts = minPts),
-    error = function(e) git_error("dbscan_error", paste("Ошибка DBSCAN:", e$message))
-  )
-  if (is_git_error(dbscan_result)) return(dbscan_result)
-  
-  ml_data$data$cluster <- dbscan_result$cluster
-  ml_data$data$cluster_type <- ifelse(dbscan_result$cluster == 0, "Шум", paste0("Кластер ", dbscan_result$cluster))
-  
-  cluster_profiles <- aggregate(ml_data$data[, ml_data$features], 
-                                by = list(cluster = ml_data$data$cluster), FUN = mean)
-  cluster_stats <- as.data.frame(table(ml_data$data$cluster_type))
-  names(cluster_stats) <- c("cluster_type", "developers_count")
-  
-  list(clustering = dbscan_result, data = ml_data$data,
-       cluster_profiles = cluster_profiles, cluster_stats = cluster_stats,
-       features = ml_data$features, eps = eps, minPts = minPts)
-}
-
-# ---- Визуализация DBSCAN ----
-plot_dbscan_clusters <- function(dbscan_result) {
-  if (missing(dbscan_result) || is.null(dbscan_result$data)) {
-    cat("Нет данных для визуализации\n")
-    return(invisible(NULL))
-  }
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    cat("Установите ggplot2: install.packages('ggplot2')\n")
-    return(invisible(NULL))
-  }
-  data <- dbscan_result$data
-  numeric_cols <- dbscan_result$features
-  X <- data[, numeric_cols, drop = FALSE]
-  X_scaled <- scale(X)
-  pca <- prcomp(X_scaled, center = TRUE, scale. = TRUE)
-  pca_df <- as.data.frame(pca$x[, 1:2])
-  pca_df$cluster_type <- data$cluster_type
-  pca_df$author_name <- data$author_name
-  pca_df$cluster <- data$cluster
-  
-  p <- ggplot2::ggplot(pca_df, ggplot2::aes(x = PC1, y = PC2, color = cluster_type)) +
-    ggplot2::geom_point(size = 3, alpha = 0.8) +
-    ggplot2::geom_text(ggplot2::aes(label = ifelse(cluster == 0, author_name, "")),
-                       hjust = 0, vjust = -0.5, size = 3) +
-    ggplot2::labs(title = "DBSCAN кластеризация разработчиков (PCA)",
-                  color = "Тип кластера") +
-    ggplot2::theme_minimal()
-  print(p)
-  invisible(p)
-}
-
-# ---- Прогноз ARIMA с поддержкой периода ----
+# ---- ARIMA прогноз (по умолчанию для коротких историй) ----
 forecast_developer_activity <- function(conn, author_name, forecast_days = 7, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -149,7 +31,7 @@ forecast_developer_activity <- function(conn, author_name, forecast_days = 7, si
     return(git_error("insufficient_data_error", paste("Недостаточно данных для", author_name)))
   }
   
-  # Создаём непрерывный календарный ряд от первого до последнего дня
+  # Создаём непрерывный календарный ряд
   all_days <- seq.Date(from = min(df$day), to = max(df$day), by = "day")
   full_df <- data.frame(day = all_days)
   full_df <- merge(full_df, df, by = "day", all.x = TRUE)
@@ -163,7 +45,6 @@ forecast_developer_activity <- function(conn, author_name, forecast_days = 7, si
     fit <- tryCatch(ets(ts_data), error = function(e) NULL)
   }
   if (is.null(fit)) {
-    # Если ничего не подошло – предупреждение и среднее
     warning("Не удалось подобрать модель ARIMA/ETS, используется среднее значение")
     forecast_mean <- rep(mean(full_df$commits), forecast_days)
     lower_val <- mean(full_df$commits) - sd(full_df$commits)
@@ -186,7 +67,6 @@ forecast_developer_activity <- function(conn, author_name, forecast_days = 7, si
   )
   expected <- round(sum(forecast_obj$mean, na.rm = TRUE), 1)
   
-  # Добавляем предупреждения, если данные сильно разрежены
   warnings_list <- list()
   if (nrow(full_df) < 30) {
     warnings_list <- c(warnings_list, "Мало исторических данных (<30 дней). Прогноз может быть неточным.")
@@ -200,6 +80,7 @@ forecast_developer_activity <- function(conn, author_name, forecast_days = 7, si
        warnings = warnings_list)
 }
 
+# ---- XGBoost прогноз (для длинных историй) ----
 forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7, 
                                       features_lag = 7, nrounds = 100, since = NULL, until = NULL) {
   if (!requireNamespace("xgboost", quietly = TRUE)) {
@@ -235,7 +116,6 @@ forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7,
   df <- df[order(df$ds), ]
   df$y <- as.numeric(df$y)
   
-  # Функция создания признаков
   create_features <- function(data, lag) {
     for (i in 1:lag) {
       data[[paste0("lag_", i)]] <- dplyr::lag(data$y, i)
@@ -263,7 +143,6 @@ forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7,
   X <- as.matrix(df_feat[, x_cols])
   y <- df_feat$y
   
-  # ----- ОБУЧЕНИЕ МОДЕЛИ (новый API: x и y) -----
   model <- xgboost::xgboost(
     x = X,
     y = y,
@@ -273,9 +152,7 @@ forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7,
     max_depth = 3,
     verbosity = 0
   )
-  # -----------------------------------------------
   
-  # ----- Рекурсивный прогноз -----
   last_known <- tail(df_feat, 1)
   predictions <- numeric(forecast_days)
   
@@ -286,9 +163,7 @@ forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7,
     predictions[i] <- pred_val
     if (i == forecast_days) break
     
-    # --- Обновление признаков для следующего дня ---
     next_row <- last_known
-    # Сдвиг лагов
     for (j in seq(features_lag, 1)) {
       if (j == 1) {
         next_row[[paste0("lag_", j)]] <- pred_val
@@ -296,14 +171,12 @@ forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7,
         next_row[[paste0("lag_", j)]] <- last_known[[paste0("lag_", j-1)]]
       }
     }
-    # Скользящее среднее
     if (requireNamespace("zoo", quietly = TRUE)) {
       hist_y <- tail(df_feat$y, 6)
       window_vals <- c(hist_y, pred_val)
       next_row$ma7 <- mean(window_vals)
       next_row$ma7_lag1 <- last_known$ma7
     }
-    # Календарь
     next_date <- last_known$ds + 1
     next_row$ds <- next_date
     next_row$dow <- as.numeric(format(next_date, "%u"))
@@ -317,6 +190,27 @@ forecast_activity_xgboost <- function(conn, author_name, forecast_days = 7,
   list(author = author_name, historical = df, predictions = predictions,
        expected_commits_next_week = expected, model = model)
 }
+
+#' Автоматический выбор метода прогнозирования:
+#' - ARIMA (по умолчанию) для коротких историй (<30 дней)
+#' - XGBoost для длинных (>=30 дней)
+auto_forecast <- function(conn, author_name, forecast_days = 7, since = NULL, until = NULL) {
+  # Сначала проверяем количество дней истории
+  where <- sprintf("author_name = '%s'", author_name)
+  if (!is.null(since)) where <- paste0(where, " AND date >= '", since, "'")
+  if (!is.null(until)) where <- paste0(where, " AND date <= '", until, "'")
+  query <- sprintf("SELECT COUNT(DISTINCT date::DATE) as days FROM git_commit_history WHERE %s", where)
+  days <- DBI::dbGetQuery(conn, query)$days[1]
+  
+  if (days >= 30 && requireNamespace("xgboost", quietly = TRUE)) {
+    message("Используется XGBoost (история >=30 дней)")
+    forecast_activity_xgboost(conn, author_name, forecast_days, since = since, until = until)
+  } else {
+    message("Используется ARIMA (короткая история или XGBoost недоступен)")
+    forecast_developer_activity(conn, author_name, forecast_days, since = since, until = until)
+  }
+}
+
 # ---- Сезонность и тренды ----
 get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
@@ -396,7 +290,7 @@ get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = 
        worst_month = df[which.min(df$commits), ])
 }
 
-# ---- ML-аномалии и подготовка признаков ----
+# ---- ML-аномалии (Isolation Forest) ----
 prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -434,6 +328,7 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
   df
 }
 
+#' Получение ML-аномалий (Isolation Forest)
 get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95, 
                              return_features = TRUE, since = NULL, until = NULL) {
   if (!requireNamespace("solitude", quietly = TRUE)) {
@@ -461,6 +356,7 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
     return(data.frame())
   }
   
+  # ---- Читаемое объяснение аномалии (без оценки) ----
   anomalies$explanation <- apply(anomalies, 1, function(row) {
     reasons <- c()
     hour <- as.numeric(row["hour"])
@@ -471,32 +367,42 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
     
     if (hour < 6 || hour > 22) reasons <- c(reasons, "ночное время")
     if (dow %in% c(0, 6)) reasons <- c(reasons, "выходной день")
-    if (commit_size > 500) reasons <- c(reasons, paste0("очень большой коммит (", commit_size, " строк)"))
-    if (commit_size < 10 && commit_size > 0) reasons <- c(reasons, paste0("очень маленький коммит (", commit_size, " строк)"))
+    if (commit_size > 500) {
+      reasons <- c(reasons, paste0("очень большой коммит (", commit_size, " строк)"))
+    } else if (commit_size < 10 && commit_size > 0) {
+      reasons <- c(reasons, paste0("очень маленький коммит (", commit_size, " строк)"))
+    }
     if (n_files > 5) reasons <- c(reasons, paste0("много файлов (", n_files, ")"))
-    if (add_del_ratio > 3) reasons <- c(reasons, paste0("сильный перекос в добавлениях (", round(add_del_ratio, 1), ")"))
-    if (add_del_ratio < 0.33) reasons <- c(reasons, paste0("сильный перекос в удалениях (", round(add_del_ratio, 1), ")"))
-    if (add_del_ratio == 999) reasons <- c(reasons, "только удаления, без добавлений")
+    
+    # Обработка перекоса добавлений/удалений
+    if (add_del_ratio > 3) {
+      if (add_del_ratio > 100) {
+        reasons <- c(reasons, "почти все строки добавлены, удалений почти нет")
+      } else {
+        reasons <- c(reasons, paste0("добавлено в ", round(add_del_ratio, 1), " раз больше, чем удалено"))
+      }
+    } else if (add_del_ratio < 0.33 && add_del_ratio != 999) {
+      del_ratio <- round(1 / add_del_ratio, 1)
+      if (del_ratio > 100) {
+        reasons <- c(reasons, "почти все строки удалены, добавлений почти нет")
+      } else {
+        reasons <- c(reasons, paste0("удалено в ", del_ratio, " раз больше, чем добавлено"))
+      }
+    } else if (add_del_ratio == 999) {
+      reasons <- c(reasons, "только удаления, без добавлений")
+    }
     
     if (length(reasons) == 0) {
-      paste("Аномальная комбинация признаков (оценка", round(as.numeric(row["anomaly_score"]), 3), ")")
+      "необычное сочетание признаков"
     } else {
-      paste("Необычно:", paste(reasons, collapse = ", "), 
-            "(оценка", round(as.numeric(row["anomaly_score"]), 3), ")")
+      paste(reasons, collapse = ", ")
     }
   })
   
-  anomalies$anomaly_type <- "ml_anomaly"
-  anomalies$description <- paste(
-    "ML-аномалия: оценка", round(anomalies$anomaly_score, 3),
-    "(порог", round(quantile_thresh, 3), ")"
-  )
-  
+  # Формируем результат
   result <- data.frame(
     author_name = anomalies$author_name,
     date = anomalies$date,
-    anomaly_type = anomalies$anomaly_type,
-    description = anomalies$description,
     explanation = anomalies$explanation,
     anomaly_score = anomalies$anomaly_score,
     commit = anomalies$commit,
@@ -511,9 +417,7 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
     result$add_del_ratio <- anomalies$add_del_ratio
   }
   
-  # Сортировка по убыванию anomaly_score
   result <- result[order(-result$anomaly_score), ]
-  
   cat(sprintf("Найдено %d ML-аномалий (порог: %.2f%%)\n", nrow(result), threshold * 100))
   return(result)
 }
@@ -556,7 +460,6 @@ plot_forecast <- function(forecast_result) {
     legend("topright", legend = c("Прогноз", "95% ДИ"), col = c("blue", "red"), lty = c(1,2))
     mtext(paste("Ожидается:", forecast_result$expected_commits_next_week, "коммитов"), side = 3)
   } else if (!is.null(forecast_result$predictions)) {
-    # Для XGBoost прогноза
     preds <- forecast_result$predictions
     plot(1:length(preds), preds, type = "b", col = "blue", pch = 19,
          main = paste("Прогноз XGBoost для", forecast_result$author),
