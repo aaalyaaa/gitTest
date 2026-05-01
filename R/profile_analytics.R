@@ -1,5 +1,6 @@
 # profile_analytics.R
 # Функции для профилирования отдельных разработчиков
+# Исправлено: зависимости из репозитория добавляются только если разработчик изменял файлы зависимостей
 
 git_error <- function(class, message, ...) {
   structure(list(message = message, ...), class = c(class, "error", "condition"))
@@ -86,7 +87,7 @@ get_tech_stack_base <- function(conn, author_name) {
   unique(detected)
 }
 
-# -------------------- Чтение файлов зависимостей из репозиториев --------------------
+# -------------------- Чтение файлов зависимостей из репозитория --------------------
 read_dependency_files <- function(repo_path) {
   if (!dir.exists(repo_path)) return(character())
   detected <- character()
@@ -161,6 +162,54 @@ read_dependency_files <- function(repo_path) {
   unique(detected)
 }
 
+# -------------------- Получение репозиториев, где разработчик изменял файлы зависимостей --------------------
+get_repos_with_dependency_changes <- function(conn, author_name) {
+  dep_files <- c(
+    "requirements.txt", "setup.py", "pyproject.toml",
+    "package.json", "yarn.lock",
+    "go.mod",
+    "Cargo.toml",
+    "pom.xml", "build.gradle", "settings.gradle",
+    "composer.json",
+    "Gemfile",
+    "DESCRIPTION", "NAMESPACE"
+  )
+  query <- sprintf("
+    SELECT DISTINCT rp.path
+    FROM git_commit_history c
+    JOIN git_file_changes d ON c.commit = d.commit
+    JOIN repo_path rp ON c.repo_id = rp.id
+    WHERE c.author_name = '%s'
+  ", gsub("'", "''", author_name))
+  
+  files_df <- tryCatch(DBI::dbGetQuery(conn, query), error = function(e) data.frame())
+  if (nrow(files_df) == 0) return(character())
+  
+  dep_files_lower <- tolower(dep_files)
+  changed_repos <- character()
+  for (i in seq_len(nrow(files_df))) {
+    repo_path <- files_df$path[i]
+    # В запросе выше мы не получили конкретные файлы, нужно переписать запрос, чтобы получить имена файлов.
+    # Лучше сделать отдельный запрос на получение изменённых файлов.
+    # Переделаем:
+  }
+  # Более простой и надёжный способ: отдельный запрос на файлы
+  files_query <- sprintf("
+    SELECT DISTINCT COALESCE(d.dst_file, d.src_file) as file_name, rp.path as repo_path
+    FROM git_commit_history c
+    JOIN git_file_changes d ON c.commit = d.commit
+    JOIN repo_path rp ON c.repo_id = rp.id
+    WHERE c.author_name = '%s'
+  ", gsub("'", "''", author_name))
+  
+  changes <- tryCatch(DBI::dbGetQuery(conn, files_query), error = function(e) data.frame())
+  if (nrow(changes) == 0) return(character())
+  
+  dep_files_lower <- tolower(dep_files)
+  is_dep_file <- sapply(tolower(basename(changes$file_name)), function(f) f %in% dep_files_lower)
+  unique(changes$repo_path[is_dep_file])
+}
+
 # -------------------- Поиск библиотек в коде (added_code) --------------------
 extract_libraries_from_code <- function(conn, author_name) {
   query <- sprintf("
@@ -183,29 +232,23 @@ extract_libraries_from_code <- function(conn, author_name) {
   unique(detected)
 }
 
-# -------------------- Основная функция технологического стека --------------------
+# -------------------- Основная функция технологического стека (исправленная) --------------------
 get_tech_stack <- function(conn, author_name) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
+  # Источник 1: анализ путей и расширений файлов
   base_stack <- suppressWarnings(get_tech_stack_base(conn, author_name))
   if (is_git_error(base_stack)) base_stack <- character()
   
+  # Источник 2: библиотеки, найденные в добавленном коде (импорты)
   lib_stack <- suppressWarnings(extract_libraries_from_code(conn, author_name))
   if (is_git_error(lib_stack)) lib_stack <- character()
   
-  repo_paths <- tryCatch(
-    DBI::dbGetQuery(conn, sprintf("
-      SELECT DISTINCT rp.path
-      FROM git_commit_history ch
-      JOIN repo_path rp ON ch.repo_id = rp.id
-      WHERE ch.author_name = '%s'
-    ", gsub("'", "''", author_name)))$path,
-    error = function(e) character()
-  )
-  
+  # Источник 3: зависимости из файлов, только если разработчик изменял эти файлы
+  repos_with_deps <- suppressWarnings(get_repos_with_dependency_changes(conn, author_name))
   dep_stack <- character()
-  for (rp in repo_paths) {
+  for (rp in repos_with_deps) {
     if (dir.exists(rp)) {
       dep_stack <- c(dep_stack, read_dependency_files(rp))
     }
@@ -216,7 +259,7 @@ get_tech_stack <- function(conn, author_name) {
   return(full_stack)
 }
 
-# -------------------- Профиль типов коммитов по размеру изменений --------------------
+# -------------------- Остальные функции (без изменений) --------------------
 get_commit_type_profile <- function(conn, author_name) {
   query <- sprintf("
     SELECT SUM(d.count_add + d.count_del) as commit_size
@@ -237,7 +280,6 @@ get_commit_type_profile <- function(conn, author_name) {
   )
 }
 
-# -------------------- Список репозиториев разработчика --------------------
 get_user_repositories <- function(conn, author_name) {
   query <- sprintf("
     SELECT DISTINCT 
@@ -259,7 +301,6 @@ get_user_repositories <- function(conn, author_name) {
   tryCatch(DBI::dbGetQuery(conn, query), error = function(e) data.frame())
 }
 
-# -------------------- Полный профиль разработчика (без period) --------------------
 get_developer_profile <- function(conn, author_name) {
   if (missing(conn) || is.null(conn)) return(list(error = git_error("invalid_argument", "conn не может быть NULL")))
   if (missing(author_name) || author_name == "") return(list(error = git_error("invalid_argument", "author_name обязателен")))
