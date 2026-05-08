@@ -176,24 +176,24 @@ extract_libraries_from_code <- function(conn, author_name) {
   if (length(added_codes) == 0) return(character())
   
   tokenize_code <- function(code) {
-    tokens <- unlist(strsplit(tolower(code), "[^a-zA-Z0-9_\\-\\.]+"))
-    tokens <- tokens[nchar(tokens) > 0]
+    tokens <- unlist(strsplit(tolower(code), "[^a-zA-Z0-9_\\-]+"))
+    tokens <- tokens[nchar(tokens) >= 3]
     unique(tokens)
   }
   
-  tech_patterns <- list()
+  tech_tokens <- list()
   for (tech in names(tech_dictionary)) {
     pattern <- tech_dictionary[[tech]]
-    parts <- unlist(strsplit(pattern, "\\|"))
-    tech_patterns[[tech]] <- parts
+    tokens <- unlist(strsplit(pattern, "\\|"))
+    tokens <- gsub("[^a-z0-9_\\-]", "", tokens)
+    tech_tokens[[tech]] <- tokens[nchar(tokens) > 0]
   }
   
   all_tokens <- unique(unlist(lapply(added_codes, tokenize_code)))
   detected <- character()
   
-  for (tech in names(tech_patterns)) {
-    patterns <- tech_patterns[[tech]]
-    if (any(patterns %in% all_tokens)) {
+  for (tech in names(tech_tokens)) {
+    if (any(tech_tokens[[tech]] %in% all_tokens)) {
       detected <- c(detected, tech)
     }
   }
@@ -215,7 +215,6 @@ get_tech_stack_with_groups <- function(conn, author_name) {
   groups <- sapply(all_techs, get_tech_group)
   data.frame(technology = all_techs, group = groups, stringsAsFactors = FALSE)
 }
-
 get_commit_type_profile <- function(conn, author_name, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
@@ -233,7 +232,9 @@ get_commit_type_profile <- function(conn, author_name, since = NULL, until = NUL
   ", where)
   
   sizes <- tryCatch(DBI::dbGetQuery(conn, query)$commit_size, error = function(e) numeric())
-  if (length(sizes) == 0) return(list())
+  if (length(sizes) == 0) {
+    return(list(tiny=0, small=0, medium=0, large=0, avg_size=0, median_size=0))
+  }
   
   list(
     tiny = sum(sizes < 10),
@@ -288,10 +289,8 @@ get_developer_profile <- function(conn, author_name, since = NULL, until = NULL)
   tech_stack <- if (nrow(tech_df) > 0) tech_df$technology else character()
   tech_groups <- if (nrow(tech_df) > 0) tech_df$group else character()
   
-  commit_profile <- tryCatch(get_commit_type_profile(conn, author_name, since, until), error = function(e) list())
-  total_in_period <- if (length(commit_profile) > 0) {
-    sum(commit_profile[c("tiny","small","medium","large")], na.rm = TRUE)
-  } else 0
+  commit_profile <- tryCatch(get_commit_type_profile(conn, author_name, since, until), error = function(e) list(tiny=0, small=0, medium=0, large=0, avg_size=0, median_size=0))
+  total_in_period <- commit_profile$tiny + commit_profile$small + commit_profile$medium + commit_profile$large
   active_days_in_period <- NA
   
   season <- tryCatch(get_activity_seasonality(conn, author_name = author_name, since = since, until = until), error = function(e) NULL)
@@ -317,8 +316,11 @@ get_developer_profile <- function(conn, author_name, since = NULL, until = NULL)
   anomaly_count <- 0
   anomaly_types <- character()
   if (anomalies_table_exists) {
+    where_date <- ""
+    if (!is.null(since)) where_date <- paste0(" AND date >= '", since, "'")
+    if (!is.null(until)) where_date <- paste0(where_date, " AND date <= '", until, "'")
     anom_df <- tryCatch(
-      DBI::dbGetQuery(conn, sprintf("SELECT anomaly_type FROM anomalies WHERE author_name = '%s'", gsub("'", "''", author_name))),
+      DBI::dbGetQuery(conn, sprintf("SELECT anomaly_type FROM anomalies WHERE author_name = '%s' %s", gsub("'", "''", author_name), where_date)),
       error = function(e) data.frame()
     )
     if (nrow(anom_df) > 0) {

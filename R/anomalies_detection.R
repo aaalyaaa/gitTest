@@ -153,25 +153,34 @@ get_all_anomalies <- function(conn, username = NULL, limit = Inf, since = NULL, 
   cat(sprintf("\n Найдено rule‑аномалий: %d\n", nrow(result)))
   return(result)
 }
-
 cache_anomalies <- function(conn, ml_threshold = 0.95, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   
   rule_anom <- get_all_anomalies(conn, since = since, until = until, limit = Inf)
   if (is_git_error(rule_anom)) return(rule_anom)
   
+  # Безопасный вызов get_ml_anomalies
   ml_anom <- tryCatch(
     get_ml_anomalies(conn, threshold = ml_threshold, since = since, until = until),
-    error = function(e) data.frame()
+    error = function(e) {
+      warning("Ошибка в get_ml_anomalies: ", e$message)
+      data.frame()
+    }
   )
   
-  if (!is_git_error(ml_anom) && nrow(ml_anom) > 0) {
+  # Дополнительная проверка на класс error
+  if (is_git_error(ml_anom)) {
+    warning("ML-аномалии не получены: ", ml_anom$message)
+    ml_anom <- data.frame()
+  }
+  
+  if (!is.data.frame(ml_anom) || nrow(ml_anom) == 0) {
+    ml_anom <- data.frame()
+  } else {
     ml_anom$anomaly_type <- "ml_anomaly"
     ml_anom$description <- ml_anom$explanation
     ml_anom$anomaly_id <- NA
     ml_anom <- ml_anom[, c("author_name", "date", "anomaly_type", "description", "anomaly_id")]
-  } else {
-    ml_anom <- data.frame()
   }
   
   all_anom <- rbind(rule_anom, ml_anom)
@@ -240,22 +249,25 @@ get_top_anomaly_developers <- function(anomalies, n = 5) {
   top <- top[order(-top$anomaly_count), ]
   return(head(top, n))
 }
-
 format_anomalies_for_hr <- function(rule_anomalies, ml_anomalies = NULL, frequent_edits = NULL) {
   work_pattern <- list()
   work_quality <- list()
   
-  night_count <- if (!is.null(rule_anomalies) && nrow(rule_anomalies) > 0) {
+  if (!is.data.frame(rule_anomalies) || nrow(rule_anomalies) == 0) {
+    rule_anomalies <- data.frame()
+  }
+  
+  night_count <- if (nrow(rule_anomalies) > 0) {
     sum(rule_anomalies$anomaly_type == "night_commit", na.rm = TRUE)
   } else 0
   work_pattern$nights <- if (night_count > 0) paste0("работает по ночам (", night_count, " раз)") else "не коммитит по ночам"
   
-  weekend_count <- if (!is.null(rule_anomalies) && nrow(rule_anomalies) > 0) {
+  weekend_count <- if (nrow(rule_anomalies) > 0) {
     sum(rule_anomalies$anomaly_type == "weekend_commit", na.rm = TRUE)
   } else 0
   work_pattern$weekends <- if (weekend_count > 0) paste0("коммитит в выходные (", weekend_count, " раз)") else "не работает в выходные"
   
-  breaks <- if (!is.null(rule_anomalies) && nrow(rule_anomalies) > 0) {
+  breaks <- if (nrow(rule_anomalies) > 0) {
     rule_anomalies[rule_anomalies$anomaly_type == "long_break", ]
   } else data.frame()
   if (nrow(breaks) > 0) {
@@ -267,22 +279,28 @@ format_anomalies_for_hr <- function(rule_anomalies, ml_anomalies = NULL, frequen
     work_pattern$breaks <- "нет длинных перерывов"
   }
   
-  large_count <- if (!is.null(rule_anomalies) && nrow(rule_anomalies) > 0) {
+  large_count <- if (nrow(rule_anomalies) > 0) {
     sum(rule_anomalies$anomaly_type == "large_commit", na.rm = TRUE)
   } else 0
   work_quality$large_commits <- if (large_count > 0) paste0(large_count, " очень больших коммита (>500 строк)") else "нет очень больших коммитов"
   
-  empty_count <- if (!is.null(rule_anomalies) && nrow(rule_anomalies) > 0) {
+  empty_count <- if (nrow(rule_anomalies) > 0) {
     sum(rule_anomalies$anomaly_type == "empty_message", na.rm = TRUE)
   } else 0
   work_quality$empty_messages <- if (empty_count > 0) paste0(empty_count, " коммитов без содержательного сообщения") else "все коммиты имеют сообщения"
   
-  freq_days <- if (!is.null(frequent_edits) && nrow(frequent_edits) > 0) {
-    sum(frequent_edits$days_with_frequent_edits, na.rm = TRUE)
-  } else 0
+  freq_days <- 0
+  if (!is.null(frequent_edits) && is.data.frame(frequent_edits) && nrow(frequent_edits) > 0) {
+    if ("days_with_frequent_edits" %in% names(frequent_edits)) {
+      freq_days <- sum(frequent_edits$days_with_frequent_edits, na.rm = TRUE)
+    }
+  }
   work_quality$frequent_edits <- if (freq_days > 0) paste0(freq_days, " дней с частыми правками одного файла (>10 раз/день)") else "нет дней с частыми правками одного файла"
   
-  ml_count <- if (!is.null(ml_anomalies) && nrow(ml_anomalies) > 0) nrow(ml_anomalies) else 0
+  ml_count <- 0
+  if (!is.null(ml_anomalies) && is.data.frame(ml_anomalies) && nrow(ml_anomalies) > 0) {
+    ml_count <- nrow(ml_anomalies)
+  }
   work_quality$ml_anomalies <- if (ml_count > 0) paste0(ml_count, " коммитов с необычными паттернами") else "нет необычных паттернов коммитов"
   
   list(work_pattern = work_pattern, work_quality = work_quality)

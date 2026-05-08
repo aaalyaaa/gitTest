@@ -1,3 +1,22 @@
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+is_git_error <- function(x) {
+  inherits(x, "error")
+}
+git_error <- function(class, message, ...) {
+  structure(
+    list(message = message, ...),
+    class = c(class, "error", "condition")
+  )
+}
+
+stop_if_error <- function(x, msg = NULL) {
+  if (is_git_error(x)) {
+    stop(if (is.null(msg)) x$message else paste(msg, x$message, sep = ": "))
+  }
+  return(x)
+}
+
 refresh_developer_metrics <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -22,8 +41,6 @@ refresh_developer_metrics <- function(conn) {
         unique_files INTEGER,
         avg_time_between_commits REAL,
         contribution_share REAL,
-        prev_month_commits INTEGER,
-        current_month_commits INTEGER,
         avg_commit_hour REAL,
         avg_add_per_commit REAL,
         avg_del_per_commit REAL,
@@ -51,12 +68,17 @@ refresh_developer_metrics <- function(conn) {
           author_name,
           COUNT(DISTINCT commit) AS total_commits,
           COUNT(DISTINCT repo) AS repos_count,
-          MIN(date) AS first_commit,
-          MAX(date) AS last_commit,
-          COUNT(DISTINCT CAST(date AS DATE)) AS active_days,
-          SUM(CASE WHEN EXTRACT(HOUR FROM date) >= 22 OR EXTRACT(HOUR FROM date) < 6 THEN 1 ELSE 0 END) AS night_commits,
-          SUM(CASE WHEN EXTRACT(DOW FROM date) IN (0,6) THEN 1 ELSE 0 END) AS weekend_commits,
-          AVG(EXTRACT(HOUR FROM date)) AS avg_commit_hour
+          CAST(MIN(CAST(date AS TIMESTAMP)) AS DATE) AS first_commit,
+          CAST(MAX(CAST(date AS TIMESTAMP)) AS DATE) AS last_commit,
+          COUNT(DISTINCT DATE_TRUNC('day', CAST(date AS TIMESTAMP))) AS active_days,
+          SUM(CASE 
+            WHEN EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) >= 22 
+              OR EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) < 6 
+            THEN 1 ELSE 0 END) AS night_commits,
+          SUM(CASE 
+            WHEN EXTRACT(DOW FROM CAST(date AS TIMESTAMP)) IN (0,6) 
+            THEN 1 ELSE 0 END) AS weekend_commits,
+          AVG(EXTRACT(HOUR FROM CAST(date AS TIMESTAMP))) AS avg_commit_hour
         FROM git_commit_history
         GROUP BY author_name
       ),
@@ -80,28 +102,12 @@ refresh_developer_metrics <- function(conn) {
         FROM (
           SELECT 
             author_name,
-            date AS commit_date,
-            LAG(date) OVER (PARTITION BY author_name ORDER BY date) AS prev_date,
-            EXTRACT(EPOCH FROM (date - LAG(date) OVER (PARTITION BY author_name ORDER BY date))) / 3600.0 AS gap_hours
+            date,
+            LAG(CAST(date AS TIMESTAMP)) OVER (PARTITION BY author_name ORDER BY CAST(date AS TIMESTAMP)) AS prev_ts,
+            EXTRACT(EPOCH FROM (CAST(date AS TIMESTAMP) - LAG(CAST(date AS TIMESTAMP)) OVER (PARTITION BY author_name ORDER BY CAST(date AS TIMESTAMP)))) / 3600.0 AS gap_hours
           FROM git_commit_history
         ) gaps
         WHERE gap_hours IS NOT NULL
-        GROUP BY author_name
-      ),
-      monthly_trend AS (
-        SELECT 
-          author_name,
-          SUM(CASE WHEN month = current_month THEN commits ELSE 0 END) AS current_month_commits,
-          SUM(CASE WHEN month = current_month - INTERVAL '1' MONTH THEN commits ELSE 0 END) AS prev_month_commits
-        FROM (
-          SELECT 
-            author_name,
-            DATE_TRUNC('month', date) AS month,
-            COUNT(*) AS commits,
-            MAX(DATE_TRUNC('month', date)) OVER () AS current_month
-          FROM git_commit_history
-          GROUP BY author_name, DATE_TRUNC('month', date)
-        ) t
         GROUP BY author_name
       ),
       lang_stats AS (
@@ -155,8 +161,6 @@ refresh_developer_metrics <- function(conn) {
         COALESCE(cc.unique_files, 0) AS unique_files,
         cg.avg_time_between_commits,
         ROUND(1.0 * b.total_commits / NULLIF(art.total_commits_in_my_repos, 0), 4) AS contribution_share,
-        COALESCE(mt.prev_month_commits, 0) AS prev_month_commits,
-        COALESCE(mt.current_month_commits, 0) AS current_month_commits,
         ROUND(COALESCE(b.avg_commit_hour, 0), 2) AS avg_commit_hour,
         ROUND(COALESCE(cc.avg_add_per_commit, 0), 2) AS avg_add_per_commit,
         ROUND(COALESCE(cc.avg_del_per_commit, 0), 2) AS avg_del_per_commit,
@@ -166,7 +170,6 @@ refresh_developer_metrics <- function(conn) {
       FROM base b
       LEFT JOIN code_changes cc ON b.author_name = cc.author_name
       LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
-      LEFT JOIN monthly_trend mt ON b.author_name = mt.author_name
       LEFT JOIN lang_stats ls ON b.author_name = ls.author_name
       LEFT JOIN author_repo_total art ON b.author_name = art.author_name
     ", whitelist_str)
@@ -199,7 +202,7 @@ refresh_developer_metrics <- function(conn) {
   })
 }
 
-get_developer_stats <- function(conn, username = NULL, russian_names = FALSE) {
+get_developer_stats <- function(conn, username = NULL, since = NULL, until = NULL, russian_names = FALSE) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
@@ -220,8 +223,6 @@ get_developer_stats <- function(conn, username = NULL, russian_names = FALSE) {
         unique_files,
         avg_time_between_commits,
         contribution_share,
-        prev_month_commits,
-        current_month_commits,
         avg_commit_hour,
         avg_add_per_commit,
         avg_del_per_commit,
@@ -230,11 +231,10 @@ get_developer_stats <- function(conn, username = NULL, russian_names = FALSE) {
         language_count
       FROM developer_metrics
     "
+    params <- list()
     if (!is.null(username)) {
       query <- paste(query, "WHERE author_name LIKE ?")
       params <- list(paste0("%", username, "%"))
-    } else {
-      params <- NULL
     }
     result <- DBI::dbGetQuery(conn, query, params = params)
     if (russian_names && nrow(result) > 0) {
@@ -242,9 +242,8 @@ get_developer_stats <- function(conn, username = NULL, russian_names = FALSE) {
         "автор", "всего коммитов", "активных дней", "первый коммит", "последний коммит",
         "репозиториев", "ночных коммитов", "коммитов в выходные", "всего добавлено", "всего удалено",
         "средний размер коммита", "уникальных файлов", "среднее время между коммитами", "доля вклада",
-        "коммитов в прошлый месяц", "коммитов в последний месяц", "средний час коммита",
-        "среднее количество добавленных", "среднее количество удаленных", "основной язык",
-        "второй язык", "количество языков"
+        "средний час коммита", "среднее количество добавленных", "среднее количество удаленных",
+        "основной язык", "второй язык", "количество языков"
       )
     }
     return(result)

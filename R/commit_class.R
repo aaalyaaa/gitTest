@@ -14,29 +14,88 @@ commit_type_labels <- c(
   "chore"    = "Обслуживание"
 )
 
+#' Загрузка аннотированного датасета (скачивание, если нет)
 download_annotated_csv <- function(save_path = "annotated_dataset.csv") {
-  if (file.exists(save_path)) return(save_path)
-  url <- "https://github.com/0x404/conventional-commit-classification/tree/main/Dataset/annotated_dataset.csv"
+  if (file.exists(save_path)) {
+    message("Файл уже существует: ", save_path)
+    return(save_path)
+  }
+  url <- "https://raw.githubusercontent.com/0x404/conventional-commit-classification/main/Dataset/annotated_dataset.csv"
   message("Скачивание датасета...")
-  download.file(url, destfile = save_path, mode = "wb", quiet = FALSE)
+  tryCatch({
+    download.file(url, destfile = save_path, mode = "wb", quiet = FALSE)
+    message("Датасет сохранён как ", save_path)
+  }, error = function(e) {
+    stop("Не удалось скачать файл: ", e$message)
+  })
   return(save_path)
+}
+
+#' Загрузка и нормализация CSV (устойчивая к многострочным полям)
+read_safe_csv <- function(path) {
+  # Пробуем data.table::fread (лучше всего)
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    df <- data.table::fread(path, encoding = "UTF-8", data.table = FALSE)
+  } else {
+    # Запасной вариант: read.csv с правильными параметрами
+    df <- read.csv(path, stringsAsFactors = FALSE, fileEncoding = "UTF-8",
+                   quote = "\"", escape = FALSE, comment.char = "")
+  }
+  # Удаляем возможный BOM из первого столбца
+  names(df) <- tolower(names(df))
+  names(df) <- gsub("^\ufeff", "", names(df))
+  # Обрезаем пробелы в именах
+  names(df) <- trimws(names(df))
+  return(df)
+}
+
+#' Загрузка локального или скачанного датасета
+load_annotated_dataset <- function(csv_path = NULL) {
+  if (is.null(csv_path)) {
+    csv_path <- download_annotated_csv()
+  }
+  if (!file.exists(csv_path)) {
+    stop("Файл не найден: ", csv_path)
+  }
+  df <- read_safe_csv(csv_path)
+  
+  # Определяем колонку с сообщением
+  msg_candidates <- c("commit_message", "message", "msg", "text")
+  msg_col <- msg_candidates[msg_candidates %in% names(df)]
+  if (length(msg_col) == 0) {
+    stop("Не найдена колонка с сообщением. Доступные имена: ",
+         paste(names(df), collapse=", "))
+  }
+  msg_col <- msg_col[1]
+  
+  # Определяем колонку с типом
+  type_candidates <- c("annotated_type", "type", "label", "commit_type")
+  type_col <- type_candidates[type_candidates %in% names(df)]
+  if (length(type_col) == 0) {
+    stop("Не найдена колонка с типом. Доступные имена: ",
+         paste(names(df), collapse=", "))
+  }
+  type_col <- type_col[1]
+  
+  df$message <- df[[msg_col]]
+  df$type <- as.factor(df[[type_col]])
+  df <- df[!is.na(df$message) & nchar(trimws(df$message)) > 0, ]
+  cat("Загружено", nrow(df), "коммитов, классы:", paste(levels(df$type), collapse=", "), "\n")
+  return(df)
 }
 
 #' Обучение модели с удалением стоп-слов и отбором top max_features признаков
 train_commit_classifier <- function(csv_path = NULL, max_features = 1000) {
-  if (is.null(csv_path)) csv_path <- download_annotated_csv()
   if (!requireNamespace("tidytext", quietly = TRUE)) stop("Установите tidytext")
   if (!requireNamespace("randomForest", quietly = TRUE)) stop("Установите randomForest")
+  if (!requireNamespace("Matrix", quietly = TRUE)) stop("Установите Matrix")
   
-  library(tidytext); library(dplyr); library(randomForest); library(Matrix)
+  library(tidytext)
+  library(dplyr)
+  library(randomForest)
+  library(Matrix)
   
-  df <- read.csv(csv_path, stringsAsFactors = FALSE)
-  names(df) <- tolower(names(df))
-  msg_col <- if ("commit_message" %in% names(df)) "commit_message" else "message"
-  type_col <- if ("annotated_type" %in% names(df)) "annotated_type" else "type"
-  df$message <- df[[msg_col]]
-  df$type <- as.factor(df[[type_col]])
-  df <- df[!is.na(df$message) & nchar(trimws(df$message)) > 0, ]
+  df <- load_annotated_dataset(csv_path)
   df$id <- 1:nrow(df)
   cat("Обучающая выборка:", nrow(df), "коммитов, классов:", paste(levels(df$type), collapse=", "), "\n")
   
@@ -139,7 +198,6 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 1000) {
     rows <- words$id
     cols <- match(words$word, keep_words)
     vals <- words$tf_idf
-    # Проверка
     if (any(is.na(cols))) {
       keep_ok <- !is.na(cols)
       rows <- rows[keep_ok]; cols <- cols[keep_ok]; vals <- vals[keep_ok]
@@ -165,24 +223,17 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 1000) {
   )
 }
 
-#' Оценка на тестовой выборке (с удалением стоп-слов)
+#' Оценка на тестовой выборке
 evaluate_classifier <- function(csv_path = NULL, train_ratio = 0.8, max_features = 1000) {
-  if (is.null(csv_path)) csv_path <- download_annotated_csv()
+  if (!requireNamespace("tidytext", quietly = TRUE)) stop("Установите tidytext")
+  if (!requireNamespace("randomForest", quietly = TRUE)) stop("Установите randomForest")
   
-  df <- read.csv(csv_path, stringsAsFactors = FALSE)
-  names(df) <- tolower(names(df))
-  msg_col <- if ("commit_message" %in% names(df)) "commit_message" else "message"
-  type_col <- if ("annotated_type" %in% names(df)) "annotated_type" else "type"
-  df$message <- df[[msg_col]]
-  df$type <- as.factor(df[[type_col]])
-  df <- df[!is.na(df$message) & nchar(trimws(df$message)) > 0, ]
+  df <- load_annotated_dataset(csv_path)
   df$id <- 1:nrow(df)
-  
   set.seed(123)
   train_idx <- sample(1:nrow(df), size = floor(train_ratio * nrow(df)))
   train_df <- df[train_idx, ]
   test_df <- df[-train_idx, ]
-  # Создаём локальные индексы, начинающиеся с 1
   train_df$local_id <- 1:nrow(train_df)
   test_df$local_id <- 1:nrow(test_df)
   
@@ -190,48 +241,36 @@ evaluate_classifier <- function(csv_path = NULL, train_ratio = 0.8, max_features
   
   library(tidytext); library(dplyr); library(Matrix); library(randomForest)
   
-  # ---- Обучение на train_df ----
+  # --- Обучение ---
   word_counts_train <- train_df %>%
     select(local_id, message) %>%
     unnest_tokens(word, message) %>%
     anti_join(stop_words, by = "word") %>%
-    count(local_id, word) %>%
-    rename(id = local_id)
+    count(local_id, word) %>% rename(id = local_id)
   
   doc_freq <- word_counts_train %>%
-    group_by(word) %>%
-    summarise(df = n(), .groups = "drop")
+    group_by(word) %>% summarise(df = n(), .groups = "drop")
   N_train <- nrow(train_df)
   doc_freq$idf <- log(N_train / doc_freq$df)
   
   tfidf_train <- word_counts_train %>%
-    left_join(doc_freq, by = "word") %>%
-    mutate(tf_idf = n * idf)
+    left_join(doc_freq, by = "word") %>% mutate(tf_idf = n * idf)
   
-  # Отбираем top max_features слов
   word_importance <- tfidf_train %>%
-    group_by(word) %>%
-    summarise(total_tfidf = sum(tf_idf), .groups = "drop") %>%
-    arrange(desc(total_tfidf)) %>%
-    slice_head(n = max_features)
+    group_by(word) %>% summarise(total_tfidf = sum(tf_idf), .groups = "drop") %>%
+    arrange(desc(total_tfidf)) %>% slice_head(n = max_features)
   keep_words <- word_importance$word
   cat("Оставлено", length(keep_words), "слов\n")
   
   tfidf_train <- tfidf_train %>% filter(word %in% keep_words)
   doc_freq <- doc_freq %>% filter(word %in% keep_words)
-  
-  # Чистим перед матрицей
   tfidf_train <- tfidf_train[!is.na(tfidf_train$tf_idf), ]
-  rows <- tfidf_train$id
-  cols <- match(tfidf_train$word, keep_words)
+  rows <- tfidf_train$id; cols <- match(tfidf_train$word, keep_words)
   if (any(is.na(cols))) {
     keep_ok <- !is.na(cols)
     rows <- rows[keep_ok]; cols <- cols[keep_ok]; tfidf_train <- tfidf_train[keep_ok, ]
   }
   vals <- tfidf_train$tf_idf
-  if (max(rows) > N_train) stop("rows > N_train")
-  if (max(cols) > length(keep_words)) stop("cols > length(keep_words)")
-  
   dtm_train <- sparseMatrix(i = rows, j = cols, x = vals,
                             dims = c(N_train, length(keep_words)),
                             dimnames = list(NULL, make.names(keep_words)))
@@ -243,30 +282,25 @@ evaluate_classifier <- function(csv_path = NULL, train_ratio = 0.8, max_features
   numeric_cols <- names(train_data)[sapply(train_data, is.numeric)]
   variances <- sapply(train_data[, numeric_cols], var)
   keep_cols <- variances > 0
-  if (sum(!keep_cols) > 0) {
-    train_data <- train_data[, c(numeric_cols[keep_cols], "label")]
-  }
+  if (sum(!keep_cols) > 0) train_data <- train_data[, c(numeric_cols[keep_cols], "label")]
   predictors_train <- train_data[, names(train_data) != "label", drop = FALSE]
   target_train <- train_data$label
   model <- randomForest(x = predictors_train, y = target_train, ntree = 100)
   
-  # ---- Тестовая выборка ----
+  # --- Тест ---
   word_counts_test <- test_df %>%
     select(local_id, message) %>%
     unnest_tokens(word, message) %>%
     anti_join(stop_words, by = "word") %>%
-    count(local_id, word) %>%
-    rename(id = local_id) %>%
+    count(local_id, word) %>% rename(id = local_id) %>%
     filter(word %in% keep_words)
-  
   if (nrow(word_counts_test) == 0) {
     cat("В тестовой выборке нет слов из словаря!\n")
     return(list(accuracy = 0, confusion = NULL))
   }
   word_counts_test <- word_counts_test %>%
     left_join(doc_freq[, c("word", "idf")], by = "word") %>%
-    mutate(tf_idf = n * idf) %>%
-    filter(!is.na(tf_idf))
+    mutate(tf_idf = n * idf) %>% filter(!is.na(tf_idf))
   
   rows_test <- word_counts_test$id
   cols_test <- match(word_counts_test$word, keep_words)
@@ -275,16 +309,12 @@ evaluate_classifier <- function(csv_path = NULL, train_ratio = 0.8, max_features
     keep_ok <- !is.na(cols_test)
     rows_test <- rows_test[keep_ok]; cols_test <- cols_test[keep_ok]; vals_test <- vals_test[keep_ok]
   }
-  if (max(rows_test) > nrow(test_df)) stop("rows_test > nrow(test_df)")
-  if (max(cols_test) > length(keep_words)) stop("cols_test > length(keep_words)")
-  
   dtm_test <- sparseMatrix(i = rows_test, j = cols_test, x = vals_test,
                            dims = c(nrow(test_df), length(keep_words)),
                            dimnames = list(NULL, make.names(keep_words)))
   X_test <- as.matrix(dtm_test)
   test_data <- as.data.frame(X_test)
   names(test_data) <- make.names(names(test_data))
-  
   missing_cols <- setdiff(colnames(predictors_train), colnames(test_data))
   for (col in missing_cols) test_data[[col]] <- 0
   test_data <- test_data[, colnames(predictors_train), drop = FALSE]
@@ -293,30 +323,13 @@ evaluate_classifier <- function(csv_path = NULL, train_ratio = 0.8, max_features
   actual <- test_df$type
   confusion <- table(pred = predictions, actual = actual)
   accuracy <- sum(diag(confusion)) / sum(confusion)
-  
-  cat("\nОценка на тестовой выборке\n")
-  cat(sprintf("Точность: %.1f%%\n", accuracy * 100))
+  cat(sprintf("Точность на тесте: %.1f%%\n", accuracy * 100))
   print(confusion)
-  
-  class_report <- data.frame()
-  for (cls in sort(unique(actual))) {
-    tp <- confusion[cls, cls]
-    fp <- sum(confusion[, cls]) - tp
-    fn <- sum(confusion[cls, ]) - tp
-    precision <- ifelse(tp+fp==0, NA, tp/(tp+fp))
-    recall <- ifelse(tp+fn==0, NA, tp/(tp+fn))
-    f1 <- ifelse(is.na(precision)|is.na(recall), NA, 2*precision*recall/(precision+recall))
-    class_report <- rbind(class_report, data.frame(
-      class = cls, precision = round(precision,3), recall = round(recall,3),
-      f1 = round(f1,3), support = sum(actual==cls)
-    ))
-  }
-  print(class_report)
-  return(list(accuracy = accuracy, confusion = confusion, class_report = class_report))
+  list(accuracy = accuracy, confusion = confusion)
 }
 
-# ---- Классификация в БД ----
-classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_history", 
+#' Классификация коммитов в БД
+classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_history",
                                    author_name = NULL, batch_size = 1000) {
   where_clause <- if (!is.null(author_name)) {
     sprintf("WHERE author_name = '%s'", gsub("'", "''", author_name))
@@ -348,7 +361,7 @@ classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_his
   invisible(TRUE)
 }
 
-# ---- Профиль с читаемыми названиями ----
+#' Профиль типов коммитов
 get_commit_type_profile_ml <- function(conn, author_name, labels = commit_type_labels) {
   query <- sprintf("
     SELECT predicted_commit_type, COUNT(*) as n

@@ -8,7 +8,7 @@ get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, unt
     if (!is.null(until)) where <- paste0(where, " AND date <= '", until, "'")
     
     query <- sprintf("
-      SELECT EXTRACT(HOUR FROM date) as hour, COUNT(*) as commits
+      SELECT EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) as hour, COUNT(*) as commits
       FROM git_commit_history
       WHERE %s
       GROUP BY hour ORDER BY hour
@@ -35,7 +35,7 @@ get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = 
     if (!is.null(until)) where <- paste0(where, " AND date <= '", until, "'")
     
     query <- sprintf("
-      SELECT DATE_TRUNC('month', date) as month, COUNT(*) as commits
+      SELECT DATE_TRUNC('month', CAST(date AS TIMESTAMP)) as month, COUNT(*) as commits
       FROM git_commit_history
       WHERE %s
       GROUP BY month ORDER BY month
@@ -95,12 +95,12 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
           c.commit,
           c.author_name,
           c.date,
-          EXTRACT(HOUR FROM c.date) AS hour,
-          EXTRACT(DOW FROM c.date) AS dow,
+          EXTRACT(HOUR FROM CAST(c.date AS TIMESTAMP)) AS hour,
+          EXTRACT(DOW FROM CAST(c.date AS TIMESTAMP)) AS dow,
           COUNT(DISTINCT COALESCE(d.src_file, d.dst_file)) AS n_files,
           SUM(d.count_add + d.count_del) AS commit_size,
           CASE 
-            WHEN SUM(d.count_del) = 0 THEN 999 
+            WHEN SUM(d.count_del) = 0 THEN NULL 
             ELSE SUM(d.count_add) / SUM(d.count_del) 
           END AS add_del_ratio
       FROM git_commit_history c
@@ -113,6 +113,8 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
     if (nrow(df) == 0) {
       return(git_error("no_data_error", "Нет данных для подготовки признаков"))
     }
+    med <- median(df$add_del_ratio, na.rm = TRUE)
+    df$add_del_ratio[is.na(df$add_del_ratio)] <- med
     df
   }, error = function(e) {
     git_error("db_error", paste("Ошибка подготовки признаков:", e$message))
@@ -130,9 +132,19 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
   
   features_df <- prepare_anomaly_features(conn, author_name, since, until)
   if (is_git_error(features_df)) return(features_df)
-  if (nrow(features_df) == 0) return(data.frame())
+  if (nrow(features_df) == 0) {
+    cat("Нет данных для ML-аномалий\n")
+    return(data.frame())
+  }
+  if (nrow(features_df) < 10) {
+    cat(sprintf("Слишком мало коммитов (%d) для ML-анализа. Нужно минимум 10.\n", nrow(features_df)))
+    return(data.frame())
+  }
   
   X <- features_df[, c("hour", "dow", "n_files", "commit_size", "add_del_ratio")]
+  X <- na.omit(X)
+  if (nrow(X) < 10) return(data.frame())
+  
   iso <- solitude::isolationForest$new(sample_size = min(nrow(X), 10000), num_trees = 100)
   iso$fit(X)
   scores <- iso$predict(X)
@@ -169,15 +181,13 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
       } else {
         reasons <- c(reasons, paste0("добавлено в ", round(add_del_ratio, 1), " раз больше, чем удалено"))
       }
-    } else if (add_del_ratio < 0.33 && add_del_ratio != 999) {
+    } else if (add_del_ratio < 0.33 && add_del_ratio != 0) {
       del_ratio <- round(1 / add_del_ratio, 1)
       if (del_ratio > 100) {
         reasons <- c(reasons, "почти все строки удалены, добавлений почти нет")
       } else {
         reasons <- c(reasons, paste0("удалено в ", del_ratio, " раз больше, чем добавлено"))
       }
-    } else if (add_del_ratio == 999) {
-      reasons <- c(reasons, "только удаления, без добавлений")
     }
     
     if (length(reasons) == 0) {
@@ -205,8 +215,15 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
   }
   
   result <- result[order(-result$anomaly_score), ]
-  cat(sprintf("Найдено %d ML-аномалий (порог: %.2f%%)\n", nrow(result), threshold * 100))
-  return(result)
+  total_found <- nrow(result)
+  cat(sprintf("Найдено %d ML-аномалий (порог: %.2f%%)\n", total_found, threshold * 100))
+  if (total_found > 100) {
+    cat(sprintf("Показаны первые 100 из %d:\n", total_found))
+    print(head(result, 100))
+  } else {
+    print(result)
+  }
+  return(result)  
 }
 
 summary_ml_anomalies <- function(anomalies) {
