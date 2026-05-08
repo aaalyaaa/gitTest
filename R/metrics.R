@@ -42,6 +42,7 @@ refresh_developer_metrics <- function(conn) {
         avg_time_between_commits REAL,
         contribution_share REAL,
         avg_commit_hour REAL,
+        avg_commit_time VARCHAR,
         avg_add_per_commit REAL,
         avg_del_per_commit REAL,
         primary_language VARCHAR,
@@ -78,9 +79,17 @@ refresh_developer_metrics <- function(conn) {
           SUM(CASE 
             WHEN EXTRACT(DOW FROM CAST(date AS TIMESTAMP)) IN (0,6) 
             THEN 1 ELSE 0 END) AS weekend_commits,
-          AVG(EXTRACT(HOUR FROM CAST(date AS TIMESTAMP))) AS avg_commit_hour
+          AVG(EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) * 60 + EXTRACT(MINUTE FROM CAST(date AS TIMESTAMP))) / 60.0 AS avg_hour_decimal
         FROM git_commit_history
         GROUP BY author_name
+      ),
+      time_formatted AS (
+        SELECT 
+          author_name,
+          avg_hour_decimal,
+          FLOOR(avg_hour_decimal) AS hh,
+          ROUND((avg_hour_decimal - FLOOR(avg_hour_decimal)) * 60) AS mm_raw
+        FROM base
       ),
       code_changes AS (
         SELECT 
@@ -161,13 +170,20 @@ refresh_developer_metrics <- function(conn) {
         COALESCE(cc.unique_files, 0) AS unique_files,
         cg.avg_time_between_commits,
         ROUND(1.0 * b.total_commits / NULLIF(art.total_commits_in_my_repos, 0), 4) AS contribution_share,
-        ROUND(COALESCE(b.avg_commit_hour, 0), 2) AS avg_commit_hour,
+        ROUND(b.avg_hour_decimal, 2) AS avg_commit_hour,
+        -- форматирование времени: HH:MM с двумя цифрами минут
+        CASE 
+          WHEN tf.mm_raw = 60 
+          THEN (tf.hh + 1) || ':' || '00'
+          ELSE tf.hh || ':' || LPAD(CAST(tf.mm_raw AS VARCHAR), 2, '0')
+        END AS avg_commit_time,
         ROUND(COALESCE(cc.avg_add_per_commit, 0), 2) AS avg_add_per_commit,
         ROUND(COALESCE(cc.avg_del_per_commit, 0), 2) AS avg_del_per_commit,
         COALESCE(ls.primary_language, 'unknown') AS primary_language,
         COALESCE(ls.secondary_language, '') AS secondary_language,
         COALESCE(ls.language_count, 0) AS language_count
       FROM base b
+      LEFT JOIN time_formatted tf ON b.author_name = tf.author_name
       LEFT JOIN code_changes cc ON b.author_name = cc.author_name
       LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
       LEFT JOIN lang_stats ls ON b.author_name = ls.author_name

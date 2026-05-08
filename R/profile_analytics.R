@@ -107,6 +107,28 @@ tech_group_map <- list(
               "testthat", "phpunit")
 )
 
+get_tech_stack <- function(conn, author_name, include_groups = TRUE) {
+  if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
+  if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
+  
+  base_stack <- suppressWarnings(get_tech_stack_base(conn, author_name))
+  if (is_git_error(base_stack)) base_stack <- character()
+  lib_stack <- suppressWarnings(extract_libraries_from_code(conn, author_name))
+  if (is_git_error(lib_stack)) lib_stack <- character()
+  
+  all_techs <- unique(c(base_stack, lib_stack))
+  if (length(all_techs) == 0) {
+    if (include_groups) return(data.frame(technology = character(), group = character()))
+    else return(character())
+  }
+  
+  if (include_groups) {
+    groups <- sapply(all_techs, get_tech_group)
+    return(data.frame(technology = all_techs, group = groups, stringsAsFactors = FALSE))
+  } else {
+    return(all_techs)
+  }
+}
 get_tech_group <- function(tech) {
   for (grp in names(tech_group_map)) {
     if (tech %in% tech_group_map[[grp]]) return(grp)
@@ -118,14 +140,13 @@ get_tech_stack_base <- function(conn, author_name) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
-  query <- sprintf("
+  query <- "
     SELECT DISTINCT COALESCE(d.src_file, d.dst_file) as file_path
     FROM git_commit_history c
     JOIN git_file_changes d ON c.commit = d.commit
-    WHERE c.author_name = '%s'
-  ", gsub("'", "''", author_name))
-  
-  files <- tryCatch(DBI::dbGetQuery(conn, query), error = function(e) data.frame())
+    WHERE c.author_name = ?
+  "
+  files <- tryCatch(DBI::dbGetQuery(conn, query, params = list(author_name)), error = function(e) data.frame())
   if (nrow(files) == 0) return(character())
   file_paths <- files$file_path
   detected <- character()
@@ -165,39 +186,91 @@ get_tech_stack_base <- function(conn, author_name) {
 }
 
 extract_libraries_from_code <- function(conn, author_name) {
-  query <- sprintf("
-    SELECT DISTINCT d.added_code
+  query <- "
+    SELECT d.src_file, d.dst_file, d.added_code, d.file_extension
     FROM git_commit_history c
     JOIN git_file_changes d ON c.commit = d.commit
-    WHERE c.author_name = '%s' AND d.added_code IS NOT NULL
-  ", gsub("'", "''", author_name))
+    WHERE c.author_name = ? AND d.added_code IS NOT NULL
+  "
+  data <- tryCatch(DBI::dbGetQuery(conn, query, params = list(author_name)), error = function(e) data.frame())
+  if (nrow(data) == 0) return(character())
   
-  added_codes <- tryCatch(DBI::dbGetQuery(conn, query)$added_code, error = function(e) character())
-  if (length(added_codes) == 0) return(character())
-  
-  tokenize_code <- function(code) {
-    tokens <- unlist(strsplit(tolower(code), "[^a-zA-Z0-9_\\-]+"))
-    tokens <- tokens[nchar(tokens) >= 3]
-    unique(tokens)
-  }
-  
-  tech_tokens <- list()
-  for (tech in names(tech_dictionary)) {
-    pattern <- tech_dictionary[[tech]]
-    tokens <- unlist(strsplit(pattern, "\\|"))
-    tokens <- gsub("[^a-z0-9_\\-]", "", tokens)
-    tech_tokens[[tech]] <- tokens[nchar(tokens) > 0]
-  }
-  
-  all_tokens <- unique(unlist(lapply(added_codes, tokenize_code)))
   detected <- character()
   
-  for (tech in names(tech_tokens)) {
-    if (any(tech_tokens[[tech]] %in% all_tokens)) {
-      detected <- c(detected, tech)
+  import_patterns <- list(
+    python = "^(import|from)\\s+([a-zA-Z0-9_]+)",
+    javascript = "(require\\(['\"]([^'\"]+)['\"]|from\\s+['\"]([^'\"]+)['\"]|import\\s+['\"]([^'\"]+)['\"])",
+    typescript = "(require\\(['\"]([^'\"]+)['\"]|from\\s+['\"]([^'\"]+)['\"]|import\\s+['\"]([^'\"]+)['\"])",
+    go = "\\\"([a-zA-Z0-9_/]+)\\\"",
+    rust = "^use\\s+([a-zA-Z0-9_:]+)",
+    java = "^import\\s+([a-zA-Z0-9_.]+)",
+    csharp = "^using\\s+([a-zA-Z0-9_.]+)",
+    php = "^(use|require|include)\\s+([a-zA-Z0-9_\\\\]+)",
+    ruby = "^(require|include)\\s+['\"]([^'\"]+)['\"]"
+  )
+  
+  for (i in 1:nrow(data)) {
+    ext <- tolower(data$file_extension[i])
+    code <- data$added_code[i]
+    if (is.na(code) || nchar(trimws(code)) == 0) next
+    
+    lang <- switch(ext,
+                   py = "python",
+                   r = "r", R = "r", Rmd = "r",
+                   js = "javascript", ts = "typescript", jsx = "javascript", tsx = "typescript",
+                   go = "go",
+                   rs = "rust",
+                   java = "java",
+                   cs = "csharp",
+                   php = "php",
+                   rb = "ruby",
+                   "unknown"
+    )
+    if (lang == "unknown") next
+    
+    pattern <- import_patterns[[lang]]
+    if (is.null(pattern)) next
+    
+    matches <- regmatches(code, gregexpr(pattern, code, perl = TRUE))[[1]]
+    if (length(matches) == 0) next
+    
+    libs <- c()
+    for (m in matches) {
+      if (lang == "python") {
+        lib <- sub("^(import|from)\\s+", "", m)
+        lib <- strsplit(lib, "\\s+")[[1]][1]
+        libs <- c(libs, lib)
+      } else if (lang %in% c("javascript", "typescript")) {
+        lib <- sub(".*['\"]([^'\"]+)['\"].*", "\\1", m)
+        libs <- c(libs, lib)
+      } else if (lang == "go") {
+        lib <- sub('^"', '', m)
+        lib <- sub('"$', '', lib)
+        lib <- basename(lib)
+        libs <- c(libs, lib)
+      } else if (lang == "rust") {
+        lib <- sub("^use\\s+", "", m)
+        lib <- strsplit(lib, "::")[[1]][1]
+        libs <- c(libs, lib)
+      } else {
+        lib <- sub("^[a-zA-Z]+\\s+", "", m)
+        lib <- strsplit(lib, "[[:space:];:]+")[[1]][1]
+        libs <- c(libs, lib)
+      }
+    }
+    
+    for (lib in unique(libs)) {
+      for (tech in names(tech_dictionary)) {
+        patterns <- tech_dictionary[[tech]]
+        tokens <- unlist(strsplit(patterns, "\\|"))
+        if (any(grepl(paste0("^", lib, "$"), tokens, ignore.case = TRUE)) ||
+            any(grepl(paste0("^", lib), tokens, ignore.case = TRUE))) {
+          detected <- c(detected, tech)
+          break
+        }
+      }
     }
   }
-  
   unique(detected)
 }
 
@@ -215,13 +288,21 @@ get_tech_stack_with_groups <- function(conn, author_name) {
   groups <- sapply(all_techs, get_tech_group)
   data.frame(technology = all_techs, group = groups, stringsAsFactors = FALSE)
 }
-get_commit_type_profile <- function(conn, author_name, since = NULL, until = NULL) {
+
+get_commit_size_profile <- function(conn, author_name, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
-  where <- sprintf("c.author_name = '%s'", gsub("'", "''", author_name))
-  if (!is.null(since)) where <- paste0(where, " AND c.date >= '", since, "'")
-  if (!is.null(until)) where <- paste0(where, " AND c.date <= '", until, "'")
+  where <- "c.author_name = ?"
+  params <- list(author_name)
+  if (!is.null(since)) {
+    where <- paste(where, "AND c.date >= ?")
+    params <- c(params, since)
+  }
+  if (!is.null(until)) {
+    where <- paste(where, "AND c.date <= ?")
+    params <- c(params, until)
+  }
   
   query <- sprintf("
     SELECT SUM(d.count_add + d.count_del) as commit_size
@@ -231,7 +312,7 @@ get_commit_type_profile <- function(conn, author_name, since = NULL, until = NUL
     GROUP BY c.commit
   ", where)
   
-  sizes <- tryCatch(DBI::dbGetQuery(conn, query)$commit_size, error = function(e) numeric())
+  sizes <- tryCatch(DBI::dbGetQuery(conn, query, params = params)$commit_size, error = function(e) numeric())
   if (length(sizes) == 0) {
     return(list(tiny=0, small=0, medium=0, large=0, avg_size=0, median_size=0))
   }
@@ -250,9 +331,16 @@ get_user_repositories <- function(conn, author_name, since = NULL, until = NULL)
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
-  where_commit <- sprintf("ch.author_name = '%s'", gsub("'", "''", author_name))
-  if (!is.null(since)) where_commit <- paste0(where_commit, " AND ch.date >= '", since, "'")
-  if (!is.null(until)) where_commit <- paste0(where_commit, " AND ch.date <= '", until, "'")
+  where <- "ch.author_name = ?"
+  params <- list(author_name)
+  if (!is.null(since)) {
+    where <- paste(where, "AND ch.date >= ?")
+    params <- c(params, since)
+  }
+  if (!is.null(until)) {
+    where <- paste(where, "AND ch.date <= ?")
+    params <- c(params, until)
+  }
   
   query <- sprintf("
     SELECT DISTINCT 
@@ -270,9 +358,9 @@ get_user_repositories <- function(conn, author_name, since = NULL, until = NULL)
     LEFT JOIN repo_metadata rm ON rp.id = rm.repo_id
     WHERE %s
     ORDER BY rp.repo
-  ", where_commit)
+  ", where)
   
-  tryCatch(DBI::dbGetQuery(conn, query), error = function(e) data.frame())
+  tryCatch(DBI::dbGetQuery(conn, query, params = params), error = function(e) data.frame())
 }
 
 get_developer_profile <- function(conn, author_name, since = NULL, until = NULL) {
@@ -289,8 +377,8 @@ get_developer_profile <- function(conn, author_name, since = NULL, until = NULL)
   tech_stack <- if (nrow(tech_df) > 0) tech_df$technology else character()
   tech_groups <- if (nrow(tech_df) > 0) tech_df$group else character()
   
-  commit_profile <- tryCatch(get_commit_type_profile(conn, author_name, since, until), error = function(e) list(tiny=0, small=0, medium=0, large=0, avg_size=0, median_size=0))
-  total_in_period <- commit_profile$tiny + commit_profile$small + commit_profile$medium + commit_profile$large
+  size_profile <- tryCatch(get_commit_size_profile(conn, author_name, since, until), error = function(e) list(tiny=0, small=0, medium=0, large=0, avg_size=0, median_size=0))
+  total_in_period <- size_profile$tiny + size_profile$small + size_profile$medium + size_profile$large
   active_days_in_period <- NA
   
   season <- tryCatch(get_activity_seasonality(conn, author_name = author_name, since = since, until = until), error = function(e) NULL)
@@ -317,7 +405,7 @@ get_developer_profile <- function(conn, author_name, since = NULL, until = NULL)
   anomaly_types <- character()
   if (anomalies_table_exists) {
     where_date <- ""
-    if (!is.null(since)) where_date <- paste0(" AND date >= '", since, "'")
+    if (!is.null(since)) where_date <- paste0(where_date, " AND date >= '", since, "'")
     if (!is.null(until)) where_date <- paste0(where_date, " AND date <= '", until, "'")
     anom_df <- tryCatch(
       DBI::dbGetQuery(conn, sprintf("SELECT anomaly_type FROM anomalies WHERE author_name = '%s' %s", gsub("'", "''", author_name), where_date)),
@@ -348,7 +436,7 @@ get_developer_profile <- function(conn, author_name, since = NULL, until = NULL)
     active_days = stats$active_days[1],
     commits_in_period = total_in_period,
     active_days_in_period = active_days_in_period,
-    commit_type_profile = commit_profile,
+    commit_size_profile = size_profile,
     anomaly_count = anomaly_count,
     anomaly_types = anomaly_types,
     repositories = repos,
