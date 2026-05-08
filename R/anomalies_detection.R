@@ -1,25 +1,55 @@
-# anomalies_detection.R
-# Общие утилиты, обнаружение аномалий и их HR‑форматирование
-
-git_error <- function(class, message, ...) {
-  structure(list(message = message, ...), class = c(class, "error", "condition"))
-}
-
-`%||%` <- function(x, y) if (is.null(x)) y else x
-
-is_git_error <- function(x) inherits(x, "error")
-
-stop_if_error <- function(x, msg = NULL) {
-  if (is_git_error(x)) {
-    stop(if (is.null(msg)) x$message else paste(msg, x$message, sep = ": "))
+ensure_metrics_exist <- function(conn) {
+  tables <- tryCatch(
+    DBI::dbGetQuery(conn, "SELECT name FROM sqlite_master WHERE type='table' AND name='developer_metrics'"),
+    error = function(e) data.frame()
+  )
+  if (nrow(tables) == 0) {
+    message("Таблица developer_metrics не найдена. Вызов refresh_developer_metrics()...")
+    res <- refresh_developer_metrics(conn)
+    if (is_git_error(res)) return(res)
   }
-  return(x)
+  invisible(TRUE)
 }
 
-get_all_anomalies <- function(conn, username = NULL, limit = 1000, since = NULL, until = NULL) {
+get_pattern_change_from_metrics <- function(conn, username = NULL) {
+  where_name <- if (!is.null(username)) sprintf("AND author_name LIKE '%%%s%%'", username) else ""
+  query <- sprintf("
+    SELECT 
+      author_name, 
+      current_month_commits, 
+      prev_month_commits,
+      CASE 
+        WHEN current_month_commits > prev_month_commits * 2 AND ABS(current_month_commits - prev_month_commits) >= 10 THEN 'рост'
+        WHEN current_month_commits < prev_month_commits / 2 AND ABS(current_month_commits - prev_month_commits) >= 10 THEN 'падение'
+        ELSE NULL
+      END AS anomaly_direction
+    FROM developer_metrics
+    WHERE prev_month_commits IS NOT NULL 
+      AND current_month_commits IS NOT NULL
+      %s
+  ", where_name)
+  
+  df <- tryCatch(DBI::dbGetQuery(conn, query), error = function(e) data.frame())
+  if (nrow(df) == 0) return(data.frame())
+  
+  df <- df[!is.na(df$anomaly_direction), ]
+  if (nrow(df) == 0) return(data.frame())
+  
+  df$date <- as.POSIXct(Sys.Date())
+  df$anomaly_type <- "pattern_change"
+  df$description <- paste0("Активность ", df$anomaly_direction,
+                           " с ", df$prev_month_commits, " до ", df$current_month_commits, " коммитов")
+  df <- df[, c("author_name", "date", "anomaly_type", "description")]
+  return(df)
+}
+
+get_all_anomalies <- function(conn, username = NULL, limit = Inf, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
+  
+  metrics_ok <- ensure_metrics_exist(conn)
+  if (is_git_error(metrics_ok)) return(metrics_ok)
   
   result <- data.frame()
   errors <- list()
@@ -99,27 +129,12 @@ get_all_anomalies <- function(conn, username = NULL, limit = 1000, since = NULL,
   empty <- safe_query(empty_sql, "empty_messages")
   if (nrow(empty) > 0) result <- rbind(result, empty)
   
-  pattern_sql <- "
-    WITH monthly_stats AS (
-      SELECT author_name, DATE_TRUNC('month', date) as month, COUNT(*) as commits_per_month
-      FROM git_commit_history
-      WHERE 1=1 %s
-      GROUP BY author_name, DATE_TRUNC('month', date)
-    ),
-    changes AS (
-      SELECT author_name, month, commits_per_month,
-             LAG(commits_per_month) OVER (PARTITION BY author_name ORDER BY month) as prev_commits
-      FROM monthly_stats
-    )
-    SELECT author_name, month as date, 'pattern_change' as anomaly_type,
-           CONCAT('Активность изменилась с ', prev_commits, ' на ', commits_per_month, ' коммитов') as description
-    FROM changes
-    WHERE prev_commits IS NOT NULL 
-      AND (commits_per_month > prev_commits * 2 OR commits_per_month < prev_commits / 2)
-      AND ABS(commits_per_month - prev_commits) >= 10
-  "
-  pattern <- safe_query(pattern_sql, "pattern_changes")
-  if (nrow(pattern) > 0) result <- rbind(result, pattern)
+  pattern <- get_pattern_change_from_metrics(conn, username)
+  if (is_git_error(pattern)) {
+    errors <- c(errors, list(pattern))
+  } else if (nrow(pattern) > 0) {
+    result <- rbind(result, pattern)
+  }
   
   if (nrow(result) == 0 && length(errors) > 0) {
     return(errors[[1]])
@@ -128,9 +143,9 @@ get_all_anomalies <- function(conn, username = NULL, limit = 1000, since = NULL,
   if (nrow(result) > 0) {
     result$anomaly_id <- 1:nrow(result)
     result <- result[order(result$author_name, result$date), ]
-    if (!is.null(limit) && limit > 0 && nrow(result) > limit) {
-      result <- result[1:limit, ]
+    if (is.finite(limit) && limit > 0 && nrow(result) > limit) {
       cat(sprintf("Предупреждение: общее число аномалий превышает лимит (%d). Возвращены первые %d.\n", nrow(result), limit))
+      result <- result[1:limit, ]
     }
   }
   
@@ -139,11 +154,10 @@ get_all_anomalies <- function(conn, username = NULL, limit = 1000, since = NULL,
   return(result)
 }
 
-#' Кеширование всех аномалий (rule + ML) в таблицу anomalies
 cache_anomalies <- function(conn, ml_threshold = 0.95, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   
-  rule_anom <- get_all_anomalies(conn, since = since, until = until)
+  rule_anom <- get_all_anomalies(conn, since = since, until = until, limit = Inf)
   if (is_git_error(rule_anom)) return(rule_anom)
   
   ml_anom <- tryCatch(
@@ -172,7 +186,6 @@ cache_anomalies <- function(conn, ml_threshold = 0.95, since = NULL, until = NUL
   invisible(TRUE)
 }
 
-#' Частые правки одного файла (>10 раз в день)
 get_frequent_file_edits <- function(conn, username = NULL, since = NULL, until = NULL, threshold = 10) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   where <- ""
@@ -207,7 +220,6 @@ get_frequent_file_edits <- function(conn, username = NULL, since = NULL, until =
   return(agg)
 }
 
-#' Статистика по типам аномалий
 get_anomaly_stats <- function(anomalies) {
   if (missing(anomalies)) return(git_error("invalid_argument", "anomalies не может быть пропущен"))
   if (is_git_error(anomalies)) return(anomalies)
@@ -219,7 +231,6 @@ get_anomaly_stats <- function(anomalies) {
   return(stats)
 }
 
-#' Топ разработчиков по количеству аномалий
 get_top_anomaly_developers <- function(anomalies, n = 5) {
   if (missing(anomalies)) return(git_error("invalid_argument", "anomalies не может быть пропущен"))
   if (is_git_error(anomalies)) return(anomalies)
@@ -230,7 +241,6 @@ get_top_anomaly_developers <- function(anomalies, n = 5) {
   return(head(top, n))
 }
 
-#' HR‑форматирование аномалий (без параметра period)
 format_anomalies_for_hr <- function(rule_anomalies, ml_anomalies = NULL, frequent_edits = NULL) {
   work_pattern <- list()
   work_quality <- list()

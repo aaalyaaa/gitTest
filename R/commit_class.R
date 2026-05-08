@@ -14,9 +14,9 @@ commit_type_labels <- c(
   "chore"    = "Обслуживание"
 )
 
-download_annotated_csv <- function(save_path = "annotated_commits.csv") {
+download_annotated_csv <- function(save_path = "annotated_dataset.csv") {
   if (file.exists(save_path)) return(save_path)
-  url <- "https://raw.githubusercontent.com/0x404/conventional-commit-classification/main/Dataset/annotated_commits.csv"
+  url <- "https://github.com/0x404/conventional-commit-classification/tree/main/Dataset/annotated_dataset.csv"
   message("Скачивание датасета...")
   download.file(url, destfile = save_path, mode = "wb", quiet = FALSE)
   return(save_path)
