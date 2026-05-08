@@ -7,11 +7,9 @@ Description: What the package does (one paragraph).
 License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
     license
 Imports:
-    cluster,
     DBI,
     dplyr,
     duckdb,
-    forecast,
     ggplot2,
     lubridate,
     magrittr,
@@ -21,8 +19,9 @@ Imports:
     gert,
     tools,
     httr,
-    dbscan,
-    xgboost
+    tidytext,
+    randomForest,
+    Matrix
 Suggests:
     testthat,
     knitr,
