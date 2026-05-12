@@ -21,7 +21,9 @@ Imports:
     httr,
     tidytext,
     randomForest,
-    Matrix
+    Matrix,
+    ranger,
+    data.table
 Suggests:
     testthat,
     knitr,
