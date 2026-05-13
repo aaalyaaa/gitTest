@@ -153,37 +153,47 @@ get_all_anomalies <- function(conn, username = NULL, limit = Inf, since = NULL, 
   cat(sprintf("\n Найдено rule‑аномалий: %d\n", nrow(result)))
   return(result)
 }
-cache_anomalies <- function(conn, ml_threshold = 0.95, since = NULL, until = NULL) {
+cache_anomalies <- function(conn, score_threshold = 0.7, since = NULL, until = NULL, min_commits = 10) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   
   rule_anom <- get_all_anomalies(conn, since = since, until = until, limit = Inf)
   if (is_git_error(rule_anom)) return(rule_anom)
   
-  # Безопасный вызов get_ml_anomalies
-  ml_anom <- tryCatch(
-    get_ml_anomalies(conn, threshold = ml_threshold, since = since, until = until),
-    error = function(e) {
-      warning("Ошибка в get_ml_anomalies: ", e$message)
-      data.frame()
+  where_date <- ""
+  if (!is.null(since)) where_date <- paste0(where_date, " AND date >= '", since, "'")
+  if (!is.null(until)) where_date <- paste0(where_date, " AND date <= '", until, "'")
+  authors_query <- sprintf("
+    SELECT author_name, COUNT(*) as n
+    FROM git_commit_history
+    WHERE 1=1 %s
+    GROUP BY author_name
+  ", where_date)
+  authors <- DBI::dbGetQuery(conn, authors_query)
+  
+  all_ml_anom <- data.frame()
+  
+  for (i in seq_len(nrow(authors))) {
+    auth <- authors$author_name[i]
+    ncom <- authors$n[i]
+    if (ncom < min_commits) {
+      cat(sprintf("Автор %s: только %d коммитов, пропускаем ML-аномалии\n", auth, ncom))
+      next
     }
-  )
-  
-  # Дополнительная проверка на класс error
-  if (is_git_error(ml_anom)) {
-    warning("ML-аномалии не получены: ", ml_anom$message)
-    ml_anom <- data.frame()
+    ml <- tryCatch(
+      get_ml_anomalies(conn, author_name = auth, score_threshold = score_threshold,
+                       since = since, until = until, return_features = FALSE),
+      error = function(e) data.frame()
+    )
+    if (is.data.frame(ml) && nrow(ml) > 0) {
+      ml$anomaly_type <- "ml_anomaly"
+      ml$description <- ml$explanation
+      ml$anomaly_id <- NA
+      ml <- ml[, c("author_name", "date", "anomaly_type", "description", "anomaly_id")]
+      all_ml_anom <- rbind(all_ml_anom, ml)
+    }
   }
   
-  if (!is.data.frame(ml_anom) || nrow(ml_anom) == 0) {
-    ml_anom <- data.frame()
-  } else {
-    ml_anom$anomaly_type <- "ml_anomaly"
-    ml_anom$description <- ml_anom$explanation
-    ml_anom$anomaly_id <- NA
-    ml_anom <- ml_anom[, c("author_name", "date", "anomaly_type", "description", "anomaly_id")]
-  }
-  
-  all_anom <- rbind(rule_anom, ml_anom)
+  all_anom <- rbind(rule_anom, all_ml_anom)
   if (nrow(all_anom) > 0) {
     all_anom$anomaly_id <- 1:nrow(all_anom)
     DBI::dbExecute(conn, "DROP TABLE IF EXISTS anomalies")
@@ -272,9 +282,7 @@ format_anomalies_for_hr <- function(rule_anomalies, ml_anomalies = NULL, frequen
   } else data.frame()
   if (nrow(breaks) > 0) {
     max_break <- max(as.numeric(gsub("\\D", "", breaks$description)), na.rm = TRUE)
-    break_months <- format(as.Date(breaks$date), "%B")
-    max_break_month <- break_months[which.max(as.numeric(gsub("\\D", "", breaks$description)))]
-    work_pattern$breaks <- paste0("был перерыв ", max_break, " дней в ", max_break_month)
+    work_pattern$breaks <- paste0("перерыв ", max_break, " дней")
   } else {
     work_pattern$breaks <- "нет длинных перерывов"
   }

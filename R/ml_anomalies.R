@@ -121,7 +121,7 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
   })
 }
 
-get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95, 
+get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
                              return_features = TRUE, since = NULL, until = NULL) {
   if (!requireNamespace("solitude", quietly = TRUE)) {
     return(git_error("missing_package", "Пакет 'solitude' не установлен. Установите: install.packages('solitude')"))
@@ -150,11 +150,10 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
   scores <- iso$predict(X)
   features_df$anomaly_score <- scores$anomaly_score
   
-  quantile_thresh <- quantile(features_df$anomaly_score, probs = threshold, na.rm = TRUE)
-  anomalies <- features_df[features_df$anomaly_score >= quantile_thresh, ]
+  anomalies <- features_df[features_df$anomaly_score >= score_threshold, ]
   
   if (nrow(anomalies) == 0) {
-    cat(sprintf("ML-аномалий не найдено (порог: %.2f%%)\n", threshold * 100))
+    cat(sprintf("ML-аномалий не найдено (порог: %.2f)\n", score_threshold))
     return(data.frame())
   }
   
@@ -215,15 +214,8 @@ get_ml_anomalies <- function(conn, author_name = NULL, threshold = 0.95,
   }
   
   result <- result[order(-result$anomaly_score), ]
-  total_found <- nrow(result)
-  cat(sprintf("Найдено %d ML-аномалий (порог: %.2f%%)\n", total_found, threshold * 100))
-  if (total_found > 100) {
-    cat(sprintf("Показаны первые 100 из %d:\n", total_found))
-    print(head(result, 100))
-  } else {
-    print(result)
-  }
-  return(result)  
+  cat(sprintf("Найдено %d ML-аномалий (порог: %.2f)\n", nrow(result), score_threshold))
+  return(result)
 }
 
 summary_ml_anomalies <- function(anomalies) {
