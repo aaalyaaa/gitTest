@@ -242,7 +242,7 @@ get_tech_stack <- function(conn, author_name) {
       imported <- tolower(matches)
       imported <- gsub("^(import|from|require|use|library|include)\\s*\\(?[\"'\\s]*", "", imported)
       imported <- gsub("[\"')\\s;]+$", "", imported)
-      imported <- gsub("^([a-z0-9_\\-@]+).*", "\\1", imported)
+      imported <- gsub("^([a-z0-9_@-]+).*", "\\1", imported)
       imported <- unique(imported[nchar(imported) >= 2])
       
       # Сопоставляем с словарём
