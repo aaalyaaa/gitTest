@@ -240,8 +240,7 @@ parse_hunk_line <- function(line) {
 #'
 #' @param block Character vector representing one commit (from get_commits())
 #' @param repo_id Numeric ID of the repository
-#' @return Data frame with columns:
-#'         commit, src_file, dst_file, start_del, count_del, start_add, count_add, added_code, deleted_code
+#' @return Data frame with columns: commit, src_file, dst_file, start_del, count_del, start_add, count_add, added_code, deleted_code
 parse_commit <- function(block, repo_id) {
   first_line <- block[1]
   hash <- sub("^commit ", "", first_line)
@@ -261,12 +260,12 @@ parse_commit <- function(block, repo_id) {
     dst_line <- grep("^\\+\\+\\+ ", file_block, value = TRUE)[1]
     if (is.na(src_line) || is.na(dst_line)) next
 
-    src_file <- sub("^--- a/", "", src_line)
+    src_file <- trimws(sub("^--- a/", "", src_line))
     if (grepl("/dev/null", src_file)) {
       src_file <- NA_character_
     }
 
-    dst_file <- sub("^\\+\\+\\+ b/", "", dst_line)
+    dst_file <- trimws(sub("^\\+\\+\\+ b/", "", dst_line))
     if (grepl("^\\+\\+\\+ ", dst_file)) {
       dst_file <- sub("^\\+\\+\\+ ", "", dst_file)
     }
@@ -278,7 +277,7 @@ parse_commit <- function(block, repo_id) {
     if (is.na(file_for_ext)) {
       file_extension <- ""
     } else {
-      file_name <- basename(file_for_ext)
+      file_name <- trimws(basename(file_for_ext))
 
       special_files <- c(
         "description" = "description",
@@ -698,4 +697,23 @@ run_etl_pipeline <- function(mode, repo_url = NULL, local_path = NULL,
       message = e$message
     ))
   })
+}
+
+reset_db <- function(db_path = "git.duckdb") {
+  duckdb::duckdb_shutdown(duckdb::duckdb(db_path))
+
+  files_to_delete <- c(
+    db_path,
+    paste0(db_path, ".wal")
+  )
+
+  for (f in files_to_delete) {
+    if (file.exists(f)) {
+      file.remove(f)
+      message("Deleted: ", f)
+    }
+  }
+
+  message("Database reset. Next call to init_db() will create a fresh database.")
+  invisible(TRUE)
 }
