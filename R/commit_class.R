@@ -20,7 +20,7 @@ classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_his
   if (nrow(commits) == 0) return(invisible(FALSE))
   message("Классификация ", nrow(commits), " коммитов...")
   predictions <- character(nrow(commits))
-  
+
   for (start in seq(1, nrow(commits), by = batch_size)) {
     end <- min(start + batch_size - 1, nrow(commits))
     batch_messages <- commits$message[start:end]
@@ -28,13 +28,13 @@ classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_his
     pred_obj <- predict(model_obj$model, data = batch_features)
     predictions[start:end] <- as.character(pred_obj$predictions)
   }
-  
+
   commits$predicted_type <- predictions
   col_exists <- DBI::dbGetQuery(conn, sprintf("PRAGMA table_info(%s)", table_name))$name
   if (!"predicted_commit_type" %in% col_exists) {
     DBI::dbExecute(conn, sprintf("ALTER TABLE %s ADD COLUMN predicted_commit_type VARCHAR", table_name))
   }
-  
+
   for (i in seq_len(nrow(commits))) {
     DBI::dbExecute(conn, sprintf("
       UPDATE %s SET predicted_commit_type = '%s' WHERE commit = '%s'
@@ -181,35 +181,35 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
   library(dplyr)
   library(ranger)
   library(Matrix)
-  
+
   df <- load_annotated_dataset(csv_path)
   df$id <- 1:nrow(df)
-  
+
   word_counts <- df %>%
     select(id, message) %>%
     unnest_tokens(word, message) %>%
     anti_join(stop_words, by = "word") %>%
     count(id, word)
-  
+
   doc_freq <- word_counts %>%
     group_by(word) %>% summarise(df = n(), .groups = "drop")
   N <- nrow(df)
   doc_freq$idf <- log(N / doc_freq$df)
-  
+
   tfidf_data <- word_counts %>%
     left_join(doc_freq, by = "word") %>%
     mutate(tf_idf = n * idf)
-  
+
   word_importance <- tfidf_data %>%
     group_by(word) %>% summarise(total_tfidf = sum(tf_idf), .groups = "drop") %>%
     arrange(desc(total_tfidf)) %>%
     slice_head(n = max_features)
   keep_words <- word_importance$word
   cat("Оставлено", length(keep_words), "слов\n")
-  
+
   tfidf_filtered <- tfidf_data %>% filter(word %in% keep_words)
   doc_freq_filtered <- doc_freq %>% filter(word %in% keep_words)
-  
+
   tfidf_filtered <- tfidf_filtered[!is.na(tfidf_filtered$tf_idf), ]
   rows <- tfidf_filtered$id
   cols <- match(tfidf_filtered$word, keep_words)
@@ -224,19 +224,19 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
                       dims = c(N, length(keep_words)),
                       dimnames = list(NULL, keep_words))
   target <- df$type
-  
+
   cat("Обучение ranger (", num.trees, "деревьев)...\n")
   model <- ranger(x = dtm, y = target, num.trees = num.trees,
                   mtry = max(1, floor(sqrt(ncol(dtm)))),
                   num.threads = parallel::detectCores() - 1,
                   verbose = TRUE)
-  
+
   train_acc <- mean(model$predictions == target)
   cat(sprintf("Точность на обучении (OOB): %.1f%%\n", train_acc * 100))
-  
+
   idf_weights <- doc_freq_filtered$idf
   names(idf_weights) <- keep_words
-  
+
   transform_new_messages <- function(new_messages) {
     temp <- data.frame(id = seq_along(new_messages), message = new_messages)
     words <- temp %>%
@@ -265,7 +265,7 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
                             dimnames = list(NULL, keep_words))
     return(dtm_new)
   }
-  
+
   result <- list(
     model = model,
     transform = transform_new_messages,
