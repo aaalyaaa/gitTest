@@ -16,7 +16,7 @@ stop_if_error <- function(x, msg = NULL) {
   }
   return(x)
 }
-
+#' @export
 refresh_developer_metrics <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -217,42 +217,146 @@ refresh_developer_metrics <- function(conn) {
     git_error("db_error", paste("Ошибка при обновлении метрик:", e$message))
   })
 }
-
-get_developer_stats <- function(conn, username = NULL, since = NULL, until = NULL, russian_names = FALSE) {
+#' @export
+get_developer_stats <- function(conn, username = NULL, since = NULL, until = NULL, russian_names = FALSE, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
   tryCatch({
-    query <- "
-      SELECT 
-        author_name,
-        total_commits,
-        active_days,
-        first_commit,
-        last_commit,
-        repos_count,
-        night_commits,
-        weekend_commits,
-        total_added,
-        total_deleted,
-        avg_commit_size,
-        unique_files,
-        avg_time_between_commits,
-        contribution_share,
-        avg_commit_hour,
-        avg_add_per_commit,
-        avg_del_per_commit,
-        primary_language,
-        secondary_language,
-        language_count
-      FROM developer_metrics
-    "
-    params <- list()
-    if (!is.null(username)) {
-      query <- paste(query, "WHERE author_name LIKE ?")
-      params <- list(paste0("%", username, "%"))
+    # Если since/until/repo_id не заданы, используем кешированную таблицу developer_metrics
+    if (is.null(since) && is.null(until) && is.null(repo_id)) {
+      query <- "SELECT * FROM developer_metrics"
+      params <- list()
+      if (!is.null(username)) {
+        query <- paste(query, "WHERE author_name LIKE ?")
+        params <- list(paste0("%", username, "%"))
+      }
+      result <- DBI::dbGetQuery(conn, query, params = params)
+    } else {
+      # Динамический расчёт метрик с фильтрацией по датам и/или repo_id
+      where_date <- ""
+      if (!is.null(since)) where_date <- paste0(where_date, " AND c.date >= '", since, "'")
+      if (!is.null(until)) where_date <- paste0(where_date, " AND c.date <= '", until, "'")
+      if (!is.null(repo_id)) where_date <- paste0(where_date, " AND c.repo_id = ", repo_id)
+      where_name <- if (!is.null(username)) paste0(" AND c.author_name LIKE '%", username, "%'") else ""
+      
+      lang_whitelist <- c(
+        "c", "cpp", "cs", "java", "py", "go", "rb", "rs", "r", "R", "Rmd",
+        "js", "ts", "jsx", "tsx", "php", "scala", "kt", "swift", "dart",
+        "lua", "sql", "html", "css", "scss", "jl", "ex", "exs", "erl", "hrl",
+        "m", "mm", "groovy", "nim", "zig", "v", "odin",
+        "sh", "bash", "zsh", "ps1", "vue", "svelte", "ipynb",
+        "proto", "graphql", "gql", "clj", "cljs", "ml", "mli",
+        "fs", "fsi", "fsx", "hs", "pl", "pm"
+      )
+      whitelist_str <- paste0("('", paste(lang_whitelist, collapse = "','"), "')")
+      
+      query <- sprintf("
+        WITH 
+        base AS (
+          SELECT 
+            c.author_name,
+            COUNT(DISTINCT c.commit) AS total_commits,
+            COUNT(DISTINCT c.repo) AS repos_count,
+            CAST(MIN(CAST(c.date AS TIMESTAMP)) AS DATE) AS first_commit,
+            CAST(MAX(CAST(c.date AS TIMESTAMP)) AS DATE) AS last_commit,
+            COUNT(DISTINCT DATE_TRUNC('day', CAST(c.date AS TIMESTAMP))) AS active_days,
+            SUM(CASE 
+              WHEN EXTRACT(HOUR FROM CAST(c.date AS TIMESTAMP)) >= 22 
+                OR EXTRACT(HOUR FROM CAST(c.date AS TIMESTAMP)) < 6 
+              THEN 1 ELSE 0 END) AS night_commits,
+            SUM(CASE 
+              WHEN EXTRACT(DOW FROM CAST(c.date AS TIMESTAMP)) IN (0,6) 
+              THEN 1 ELSE 0 END) AS weekend_commits,
+            AVG(EXTRACT(HOUR FROM CAST(c.date AS TIMESTAMP)) * 60 + EXTRACT(MINUTE FROM CAST(c.date AS TIMESTAMP))) / 60.0 AS avg_hour_decimal
+          FROM git_commit_history c
+          WHERE 1=1 %s %s
+          GROUP BY c.author_name
+        ),
+        code_changes AS (
+          SELECT 
+            c.author_name,
+            SUM(d.count_add) AS total_added,
+            SUM(d.count_del) AS total_deleted,
+            AVG(d.count_add + d.count_del) AS avg_commit_size,
+            COUNT(DISTINCT COALESCE(d.src_file, d.dst_file)) AS unique_files,
+            AVG(d.count_add) AS avg_add_per_commit,
+            AVG(d.count_del) AS avg_del_per_commit
+          FROM git_commit_history c
+          JOIN git_file_changes d ON c.commit = d.commit
+          WHERE 1=1 %s %s
+          GROUP BY c.author_name
+        ),
+        commit_gaps AS (
+          SELECT 
+            author_name,
+            AVG(gap_hours) AS avg_time_between_commits
+          FROM (
+            SELECT 
+              author_name,
+              date,
+              LAG(CAST(date AS TIMESTAMP)) OVER (PARTITION BY author_name ORDER BY CAST(date AS TIMESTAMP)) AS prev_ts,
+              EXTRACT(EPOCH FROM (CAST(date AS TIMESTAMP) - LAG(CAST(date AS TIMESTAMP)) OVER (PARTITION BY author_name ORDER BY CAST(date AS TIMESTAMP)))) / 3600.0 AS gap_hours
+            FROM git_commit_history c
+            WHERE 1=1 %s %s
+          ) gaps
+          WHERE gap_hours IS NOT NULL
+          GROUP BY author_name
+        ),
+        lang_stats AS (
+          SELECT 
+            author_name,
+            MAX(CASE WHEN lang_rank = 1 THEN file_extension END) AS primary_language,
+            MAX(CASE WHEN lang_rank = 2 THEN file_extension END) AS secondary_language,
+            COUNT(DISTINCT file_extension) AS language_count
+          FROM (
+            SELECT 
+              c.author_name,
+              d.file_extension,
+              COUNT(*) AS cnt,
+              ROW_NUMBER() OVER (PARTITION BY c.author_name ORDER BY COUNT(*) DESC) AS lang_rank
+            FROM git_commit_history c
+            JOIN git_file_changes d ON c.commit = d.commit
+            WHERE d.file_extension IS NOT NULL AND d.file_extension != ''
+              AND d.file_extension IN %s
+              %s %s
+            GROUP BY c.author_name, d.file_extension
+          ) t
+          GROUP BY author_name
+        )
+        SELECT 
+          b.author_name,
+          b.total_commits,
+          b.active_days,
+          b.first_commit,
+          b.last_commit,
+          b.repos_count,
+          b.night_commits,
+          b.weekend_commits,
+          COALESCE(cc.total_added, 0) AS total_added,
+          COALESCE(cc.total_deleted, 0) AS total_deleted,
+          COALESCE(cc.avg_commit_size, 0) AS avg_commit_size,
+          COALESCE(cc.unique_files, 0) AS unique_files,
+          cg.avg_time_between_commits,
+          NULL AS contribution_share,
+          ROUND(b.avg_hour_decimal, 2) AS avg_commit_hour,
+          ROUND(COALESCE(cc.avg_add_per_commit, 0), 2) AS avg_add_per_commit,
+          ROUND(COALESCE(cc.avg_del_per_commit, 0), 2) AS avg_del_per_commit,
+          COALESCE(ls.primary_language, 'unknown') AS primary_language,
+          COALESCE(ls.secondary_language, '') AS secondary_language,
+          COALESCE(ls.language_count, 0) AS language_count
+        FROM base b
+        LEFT JOIN code_changes cc ON b.author_name = cc.author_name
+        LEFT JOIN commit_gaps cg ON b.author_name = cg.author_name
+        LEFT JOIN lang_stats ls ON b.author_name = ls.author_name
+      ", where_name, where_date, 
+                       where_name, where_date,
+                       where_name, where_date,
+                       whitelist_str, where_name, where_date)
+      
+      result <- DBI::dbGetQuery(conn, query)
     }
-    result <- DBI::dbGetQuery(conn, query, params = params)
+    
     if (russian_names && nrow(result) > 0) {
       names(result) <- c(
         "автор", "всего коммитов", "активных дней", "первый коммит", "последний коммит",
@@ -267,7 +371,7 @@ get_developer_stats <- function(conn, username = NULL, since = NULL, until = NUL
     git_error("db_error", paste("Ошибка получения статистики разработчика:", e$message))
   })
 }
-
+#' @export
 get_summary_stats <- function(conn) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))

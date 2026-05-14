@@ -113,17 +113,21 @@ get_tech_group <- function(tech) {
   }
   return("other")
 }
-
-get_tech_stack <- function(conn, author_name) {
+#' @export
+get_tech_stack <- function(conn, author_name, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
+  repo_filter <- if (!is.null(repo_id)) sprintf("AND c.repo_id = %d", repo_id) else ""
+  
   files_df <- tryCatch(
     DBI::dbGetQuery(conn,
-                    "SELECT DISTINCT COALESCE(d.src_file, d.dst_file) AS file_path
-       FROM git_commit_history c
-       JOIN git_file_changes d ON c.commit = d.commit
-       WHERE c.author_name = ?",
+                    sprintf("
+        SELECT DISTINCT COALESCE(d.src_file, d.dst_file) AS file_path
+        FROM git_commit_history c
+        JOIN git_file_changes d ON c.commit = d.commit
+        WHERE c.author_name = ? %s
+      ", repo_filter),
                     params = list(author_name)
     ),
     error = function(e) data.frame()
@@ -186,13 +190,15 @@ get_tech_stack <- function(conn, author_name) {
   
   code_df <- tryCatch(
     DBI::dbGetQuery(conn,
-                    "SELECT d.added_code, d.file_extension
-       FROM git_commit_history c
-       JOIN git_file_changes d ON c.commit = d.commit
-       WHERE c.author_name = ?
-         AND d.file_extension IN ('py','r','R','js','ts','jsx','tsx','go','rs','java','kt','rb','php')
-         AND d.added_code IS NOT NULL
-         AND d.added_code != ''",
+                    sprintf("
+        SELECT d.added_code, d.file_extension
+        FROM git_commit_history c
+        JOIN git_file_changes d ON c.commit = d.commit
+        WHERE c.author_name = ? %s
+          AND d.file_extension IN ('py','r','R','js','ts','jsx','tsx','go','rs','java','kt','rb','php')
+          AND d.added_code IS NOT NULL
+          AND d.added_code != ''
+      ", repo_filter),
                     params = list(author_name)
     ),
     error = function(e) data.frame()
@@ -233,14 +239,23 @@ get_tech_stack <- function(conn, author_name) {
     row.names  = NULL
   )
 }
-
-get_commit_size_profile <- function(conn, author_name, since = NULL, until = NULL) {
+#' @export
+get_tech_list <- function(conn, author_name, repo_id = NULL) {
+  df <- get_tech_stack(conn, author_name, repo_id)
+  if (is_git_error(df) || nrow(df) == 0) {
+    return(character())
+  }
+  df$technology
+}
+#' @export
+get_commit_size_profile <- function(conn, author_name, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
   where_extra <- ""
   if (!is.null(since)) where_extra <- paste0(where_extra, " AND c.date >= '", since, "'")
   if (!is.null(until)) where_extra <- paste0(where_extra, " AND c.date <= '", until, "'")
+  if (!is.null(repo_id)) where_extra <- paste0(where_extra, " AND c.repo_id = ", repo_id)
   
   sizes <- tryCatch(
     DBI::dbGetQuery(conn,
@@ -268,14 +283,15 @@ get_commit_size_profile <- function(conn, author_name, since = NULL, until = NUL
     median_size = round(median(sizes), 1)
   )
 }
-
-get_user_repositories <- function(conn, author_name, since = NULL, until = NULL) {
+#' @export
+get_user_repositories <- function(conn, author_name, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
   if (missing(author_name) || author_name == "") return(git_error("invalid_argument", "author_name обязателен"))
   
   where_extra <- ""
   if (!is.null(since)) where_extra <- paste0(where_extra, " AND ch.date >= '", since, "'")
   if (!is.null(until)) where_extra <- paste0(where_extra, " AND ch.date <= '", until, "'")
+  if (!is.null(repo_id)) where_extra <- paste0(where_extra, " AND ch.repo_id = ", repo_id)
   
   tryCatch(
     DBI::dbGetQuery(conn,
@@ -297,9 +313,9 @@ get_user_repositories <- function(conn, author_name, since = NULL, until = NULL)
     error = function(e) data.frame()
   )
 }
-
-get_developer_role <- function(conn, author_name) {
-  tech_df <- get_tech_stack(conn, author_name)
+#' @export
+get_developer_role <- function(conn, author_name, repo_id = NULL) {
+  tech_df <- get_tech_stack(conn, author_name, repo_id = repo_id)
   if (is_git_error(tech_df) || nrow(tech_df) == 0) return("No technology detected")
   groups <- tech_df$group
   if (length(groups) == 0) return("No technology detected")

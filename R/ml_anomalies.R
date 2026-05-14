@@ -1,4 +1,5 @@
-get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, until = NULL) {
+#' @export
+get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
@@ -6,6 +7,7 @@ get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, unt
     where <- if (!is.null(author_name)) sprintf("author_name = '%s'", author_name) else "1=1"
     if (!is.null(since)) where <- paste0(where, " AND date >= '", since, "'")
     if (!is.null(until)) where <- paste0(where, " AND date <= '", until, "'")
+    if (!is.null(repo_id)) where <- paste0(where, " AND repo_id = ", repo_id)
     
     query <- sprintf("
       SELECT EXTRACT(HOUR FROM CAST(date AS TIMESTAMP)) as hour, COUNT(*) as commits
@@ -24,8 +26,8 @@ get_activity_seasonality <- function(conn, author_name = NULL, since = NULL, unt
     git_error("db_error", paste("Ошибка сезонности:", e$message))
   })
 }
-
-get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = NULL) {
+#' @export
+get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
@@ -33,6 +35,7 @@ get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = 
     where <- if (!is.null(author_name)) sprintf("author_name = '%s'", author_name) else "1=1"
     if (!is.null(since)) where <- paste0(where, " AND date >= '", since, "'")
     if (!is.null(until)) where <- paste0(where, " AND date <= '", until, "'")
+    if (!is.null(repo_id)) where <- paste0(where, " AND repo_id = ", repo_id)
     
     query <- sprintf("
       SELECT DATE_TRUNC('month', CAST(date AS TIMESTAMP)) as month, COUNT(*) as commits
@@ -77,7 +80,8 @@ get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = 
     git_error("db_error", paste("Ошибка трендов:", e$message))
   })
 }
-prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, until = NULL) {
+
+prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
@@ -85,9 +89,9 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
     where_clause <- if (!is.null(author_name)) {
       sprintf("c.author_name = '%s'", author_name)
     } else "1=1"
-    
     if (!is.null(since)) where_clause <- paste0(where_clause, " AND c.date >= '", since, "'")
     if (!is.null(until)) where_clause <- paste0(where_clause, " AND c.date <= '", until, "'")
+    if (!is.null(repo_id)) where_clause <- paste0(where_clause, " AND c.repo_id = ", repo_id)
     
     query <- sprintf("
       SELECT 
@@ -117,9 +121,9 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
     git_error("db_error", paste("Ошибка подготовки признаков:", e$message))
   })
 }
-
+#' @export
 get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
-                             return_features = TRUE, since = NULL, until = NULL) {
+                             return_features = TRUE, since = NULL, until = NULL, repo_id = NULL) {
   if (!requireNamespace("solitude", quietly = TRUE)) {
     return(git_error("missing_package", "Пакет 'solitude' не установлен. Установите: install.packages('solitude')"))
   }
@@ -127,7 +131,7 @@ get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
     return(git_error("invalid_argument", "conn не может быть NULL"))
   }
   
-  features_df <- prepare_anomaly_features(conn, author_name, since, until)
+  features_df <- prepare_anomaly_features(conn, author_name, since, until, repo_id)
   if (is_git_error(features_df)) return(features_df)
   if (nrow(features_df) == 0) {
     cat("Нет данных для ML-аномалий\n")
@@ -212,6 +216,7 @@ get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
   return(result)
 }
 
+#' @export
 summary_ml_anomalies <- function(anomalies) {
   if (missing(anomalies)) {
     return(git_error("invalid_argument", "anomalies не может быть пропущен"))

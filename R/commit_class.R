@@ -1,4 +1,5 @@
-# Классификация коммитов (Conventional Commits) с использованием предобученной модели
+# Классификация коммитов с использованием предобученной модели
+#' @export
 load_commit_model <- function() {
   model_path <- system.file("extdata", "commit_classifier_model.rds", package = utils::packageName())
   if (model_path == "") {
@@ -7,20 +8,56 @@ load_commit_model <- function() {
   readRDS(model_path)
 }
 
+# Словари для группировки типов коммитов
+commit_type_groups_en <- c(
+  "feat"     = "New Feature",
+  "fix"      = "Bug Fix",
+  "refactor" = "Code Improvement",
+  "style"    = "Code Improvement",
+  "perf"     = "Code Improvement",
+  "test"     = "Tests",
+  "docs"     = "Documentation",
+  "ci"       = "Infrastructure",
+  "build"    = "Infrastructure",
+  "chore"    = "Infrastructure"
+)
+
+commit_type_groups_ru <- c(
+  "feat"     = "Новая функциональность",
+  "fix"      = "Исправления",
+  "refactor" = "Улучшение кода",
+  "style"    = "Улучшение кода",
+  "perf"     = "Улучшение кода",
+  "test"     = "Тесты",
+  "docs"     = "Документация",
+  "ci"       = "Инфраструктура",
+  "build"    = "Инфраструктура",
+  "chore"    = "Инфраструктура"
+)
 #' Классификация коммитов в базе данных
-#' Добавляет колонку predicted_commit_type в таблицу git_commit_history.
+#' @export
 classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_history",
-                                   author_name = NULL, batch_size = 1000) {
-  where_clause <- if (!is.null(author_name)) {
-    sprintf("WHERE author_name = '%s'", gsub("'", "''", author_name))
-  } else ""
+                                   author_name = NULL, batch_size = 1000, repo_id = NULL,
+                                   group_mode = c("en", "ru")) {
+  group_mode <- match.arg(group_mode)
+  
+  where_clause <- ""
+  if (!is.null(author_name)) {
+    where_clause <- sprintf("author_name = '%s'", gsub("'", "''", author_name))
+  }
+  if (!is.null(repo_id)) {
+    if (where_clause != "") where_clause <- paste0(where_clause, " AND ")
+    where_clause <- paste0(where_clause, "repo_id = ", repo_id)
+  }
+  if (where_clause != "") where_clause <- paste0("WHERE ", where_clause)
+  
   query <- sprintf("SELECT commit, message FROM %s %s", table_name, where_clause)
   commits <- DBI::dbGetQuery(conn, query)
   commits <- commits[!is.na(commits$message) & nchar(trimws(commits$message)) > 0, ]
   if (nrow(commits) == 0) return(invisible(FALSE))
   message("Классификация ", nrow(commits), " коммитов...")
   predictions <- character(nrow(commits))
-
+  
   for (start in seq(1, nrow(commits), by = batch_size)) {
     end <- min(start + batch_size - 1, nrow(commits))
     batch_messages <- commits$message[start:end]
@@ -28,13 +65,23 @@ classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_his
     pred_obj <- predict(model_obj$model, data = batch_features)
     predictions[start:end] <- as.character(pred_obj$predictions)
   }
-
+  
+  # Применяем группировку, если нужно
+  if (group_mode == "en") {
+    predictions <- commit_type_groups_en[predictions]
+    # Если какой-то тип не найден в словаре, оставляем как есть
+    predictions[is.na(predictions)] <- predictions[is.na(predictions)]
+  } else if (group_mode == "ru") {
+    predictions <- commit_type_groups_ru[predictions]
+    predictions[is.na(predictions)] <- predictions[is.na(predictions)]
+  }
+  
   commits$predicted_type <- predictions
   col_exists <- DBI::dbGetQuery(conn, sprintf("PRAGMA table_info(%s)", table_name))$name
   if (!"predicted_commit_type" %in% col_exists) {
     DBI::dbExecute(conn, sprintf("ALTER TABLE %s ADD COLUMN predicted_commit_type VARCHAR", table_name))
   }
-
+  
   for (i in seq_len(nrow(commits))) {
     DBI::dbExecute(conn, sprintf("
       UPDATE %s SET predicted_commit_type = '%s' WHERE commit = '%s'
@@ -42,83 +89,6 @@ classify_commits_in_db <- function(conn, model_obj, table_name = "git_commit_his
   }
   message("Готово.")
   invisible(TRUE)
-}
-
-#' Группированный профиль типов коммитов (английские названия)
-
-get_commit_type_groups <- function(conn, author_name) {
-  type_to_group <- c(
-    "feat"     = "New Feature",
-    "fix"      = "Bug Fix",
-    "refactor" = "Code Improvement",
-    "style"    = "Code Improvement",
-    "perf"     = "Code Improvement",
-    "test"     = "Tests",
-    "docs"     = "Documentation",
-    "ci"       = "Infrastructure",
-    "build"    = "Infrastructure",
-    "chore"    = "Infrastructure"
-  )
-  safe_author <- gsub("'", "''", author_name)
-  query <- sprintf("
-    SELECT predicted_commit_type, COUNT(*) as n
-    FROM git_commit_history
-    WHERE author_name = '%s' AND predicted_commit_type IS NOT NULL
-    GROUP BY predicted_commit_type
-  ", safe_author)
-  df <- DBI::dbGetQuery(conn, query)
-  if (nrow(df) == 0) {
-    message("Нет данных по автору: ", author_name)
-    return(data.frame())
-  }
-  df$group <- type_to_group[df$predicted_commit_type]
-  if (any(is.na(df$group))) {
-    warning("Некоторые типы не найдены в маппинге: ",
-            paste(unique(df$predicted_commit_type[is.na(df$group)]), collapse = ", "))
-    df$group[is.na(df$group)] <- "Other"
-  }
-  grouped <- aggregate(n ~ group, data = df, sum)
-  grouped$percentage <- round(100 * grouped$n / sum(grouped$n), 1)
-  grouped <- grouped[order(-grouped$n), ]
-  return(grouped)
-}
-
-#' Группированный профиль типов коммитов (русские названия)
-get_commit_type_groups_ru <- function(conn, author_name) {
-  type_to_group_ru <- c(
-    "feat"     = "Новая функциональность",
-    "fix"      = "Исправления",
-    "refactor" = "Улучшение кода",
-    "style"    = "Улучшение кода",
-    "perf"     = "Улучшение кода",
-    "test"     = "Тесты",
-    "docs"     = "Документация",
-    "ci"       = "Инфраструктура",
-    "build"    = "Инфраструктура",
-    "chore"    = "Инфраструктура"
-  )
-  safe_author <- gsub("'", "''", author_name)
-  query <- sprintf("
-    SELECT predicted_commit_type, COUNT(*) as n
-    FROM git_commit_history
-    WHERE author_name = '%s' AND predicted_commit_type IS NOT NULL
-    GROUP BY predicted_commit_type
-  ", safe_author)
-  df <- DBI::dbGetQuery(conn, query)
-  if (nrow(df) == 0) {
-    message("Нет данных по автору: ", author_name)
-    return(data.frame())
-  }
-  df$group <- type_to_group_ru[df$predicted_commit_type]
-  if (any(is.na(df$group))) {
-    warning("Некоторые типы не найдены в маппинге: ",
-            paste(unique(df$predicted_commit_type[is.na(df$group)]), collapse = ", "))
-    df$group[is.na(df$group)] <- "Другое"
-  }
-  grouped <- aggregate(n ~ group, data = df, sum)
-  grouped$percentage <- round(100 * grouped$n / sum(grouped$n), 1)
-  grouped <- grouped[order(-grouped$n), ]
-  return(grouped)
 }
 
 #' Загрузка датасета
@@ -171,50 +141,46 @@ load_annotated_dataset <- function(csv_path = NULL) {
   return(df)
 }
 
-#' Обучение модели
+#' Обучение модели 
 #' @noRd
-train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.trees = 100) {
+train_commit_classifier <- function(csv_path = NULL, max_features = 5000, num.trees = 100) {
   if (!requireNamespace("tidytext", quietly = TRUE)) stop("Установите tidytext")
   if (!requireNamespace("ranger", quietly = TRUE)) stop("Установите ranger")
   if (!requireNamespace("Matrix", quietly = TRUE)) stop("Установите Matrix")
-  library(tidytext)
-  library(dplyr)
-  library(ranger)
-  library(Matrix)
-
+  if (!requireNamespace("dplyr", quietly = TRUE)) stop("Установите dplyr")
+  
   df <- load_annotated_dataset(csv_path)
   df$id <- 1:nrow(df)
-
-  word_counts <- df %>%
-    select(id, message) %>%
-    tidytext::unnest_tokens(word, message) %>%
-    anti_join(stop_words, by = "word") %>%
-<<<<<<< HEAD
+  
+  word_counts <- df |>
+    dplyr::select(id, message) |>
+    tidytext::unnest_tokens(word, message) |>
+    dplyr::anti_join(tidytext::stop_words, by = "word") |>
     dplyr::count(id, word)
   
-=======
-    count(id, word)
-
->>>>>>> c7ca8c5566523c235d1298074f78fa0453b0bbd0
-  doc_freq <- word_counts %>%
-    group_by(word) %>% summarise(df = n(), .groups = "drop")
+  doc_freq <- word_counts |>
+    dplyr::group_by(word) |>
+    dplyr::summarise(df = dplyr::n(), .groups = "drop")
+  
   N <- nrow(df)
   doc_freq$idf <- log(N / doc_freq$df)
-
-  tfidf_data <- word_counts %>%
-    left_join(doc_freq, by = "word") %>%
-    mutate(tf_idf = n * idf)
-
-  word_importance <- tfidf_data %>%
-    group_by(word) %>% summarise(total_tfidf = sum(tf_idf), .groups = "drop") %>%
-    arrange(desc(total_tfidf)) %>%
-    slice_head(n = max_features)
+  
+  tfidf_data <- word_counts |>
+    dplyr::left_join(doc_freq, by = "word") |>
+    dplyr::mutate(tf_idf = n * idf)
+  
+  word_importance <- tfidf_data |>
+    dplyr::group_by(word) |>
+    dplyr::summarise(total_tfidf = sum(tf_idf), .groups = "drop") |>
+    dplyr::arrange(dplyr::desc(total_tfidf)) |>
+    dplyr::slice_head(n = max_features)
+  
   keep_words <- word_importance$word
   cat("Оставлено", length(keep_words), "слов\n")
-
-  tfidf_filtered <- tfidf_data %>% filter(word %in% keep_words)
-  doc_freq_filtered <- doc_freq %>% filter(word %in% keep_words)
-
+  
+  tfidf_filtered <- tfidf_data |> dplyr::filter(word %in% keep_words)
+  doc_freq_filtered <- doc_freq |> dplyr::filter(word %in% keep_words)
+  
   tfidf_filtered <- tfidf_filtered[!is.na(tfidf_filtered$tf_idf), ]
   rows <- tfidf_filtered$id
   cols <- match(tfidf_filtered$word, keep_words)
@@ -225,34 +191,35 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
     tfidf_filtered <- tfidf_filtered[keep_ok, ]
   }
   vals <- tfidf_filtered$tf_idf
-  dtm <- sparseMatrix(i = rows, j = cols, x = vals,
-                      dims = c(N, length(keep_words)),
-                      dimnames = list(NULL, keep_words))
+  dtm <- Matrix::sparseMatrix(i = rows, j = cols, x = vals,
+                              dims = c(N, length(keep_words)),
+                              dimnames = list(NULL, keep_words))
   target <- df$type
-
+  
   cat("Обучение ranger (", num.trees, "деревьев)...\n")
-  model <- ranger(x = dtm, y = target, num.trees = num.trees,
-                  mtry = max(1, floor(sqrt(ncol(dtm)))),
-                  num.threads = parallel::detectCores() - 1,
-                  verbose = TRUE)
-
+  model <- ranger::ranger(x = dtm, y = target, num.trees = num.trees,
+                          mtry = max(1, floor(sqrt(ncol(dtm)))),
+                          num.threads = parallel::detectCores() - 1,
+                          verbose = TRUE)
+  
   train_acc <- mean(model$predictions == target)
   cat(sprintf("Точность на обучении (OOB): %.1f%%\n", train_acc * 100))
-
+  
   idf_weights <- doc_freq_filtered$idf
   names(idf_weights) <- keep_words
-
+  
   transform_new_messages <- function(new_messages) {
     temp <- data.frame(id = seq_along(new_messages), message = new_messages)
-    words <- temp %>%
-      unnest_tokens(word, message) %>%
-      anti_join(stop_words, by = "word") %>%
-      dplyr::count(id, word) %>%
-      filter(word %in% keep_words)
+    words <- temp |>
+      tidytext::unnest_tokens(word, message) |>
+      dplyr::anti_join(tidytext::stop_words, by = "word") |>
+      dplyr::count(id, word) |>
+      dplyr::filter(word %in% keep_words)
+    
     if (nrow(words) == 0) {
-      return(sparseMatrix(i = 1, j = 1, x = 0,
-                          dims = c(length(new_messages), length(keep_words)),
-                          dimnames = list(NULL, keep_words)))
+      return(Matrix::sparseMatrix(i = 1, j = 1, x = 0,
+                                  dims = c(length(new_messages), length(keep_words)),
+                                  dimnames = list(NULL, keep_words)))
     }
     words$idf <- idf_weights[words$word]
     words$tf_idf <- words$n * words$idf
@@ -265,12 +232,12 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
       cols <- cols[keep]
       vals <- vals[keep]
     }
-    dtm_new <- sparseMatrix(i = rows, j = cols, x = vals,
-                            dims = c(length(new_messages), length(keep_words)),
-                            dimnames = list(NULL, keep_words))
+    dtm_new <- Matrix::sparseMatrix(i = rows, j = cols, x = vals,
+                                    dims = c(length(new_messages), length(keep_words)),
+                                    dimnames = list(NULL, keep_words))
     return(dtm_new)
   }
-
+  
   result <- list(
     model = model,
     transform = transform_new_messages,
