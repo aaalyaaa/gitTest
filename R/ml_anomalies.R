@@ -77,7 +77,6 @@ get_activity_trends <- function(conn, author_name = NULL, since = NULL, until = 
     git_error("db_error", paste("Ошибка трендов:", e$message))
   })
 }
-
 prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, until = NULL) {
   if (missing(conn) || is.null(conn)) {
     return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -95,26 +94,24 @@ prepare_anomaly_features <- function(conn, author_name = NULL, since = NULL, unt
           c.commit,
           c.author_name,
           c.date,
+          LENGTH(c.message) AS message_length,
           EXTRACT(HOUR FROM CAST(c.date AS TIMESTAMP)) AS hour,
           EXTRACT(DOW FROM CAST(c.date AS TIMESTAMP)) AS dow,
+          COUNT(DISTINCT CASE WHEN d.count_add > 0 THEN COALESCE(d.src_file, d.dst_file) END) AS n_added_files,
+          COUNT(DISTINCT CASE WHEN d.count_del > 0 THEN COALESCE(d.src_file, d.dst_file) END) AS n_deleted_files,
           COUNT(DISTINCT COALESCE(d.src_file, d.dst_file)) AS n_files,
           SUM(d.count_add + d.count_del) AS commit_size,
-          CASE 
-            WHEN SUM(d.count_del) = 0 THEN NULL 
-            ELSE SUM(d.count_add) / SUM(d.count_del) 
-          END AS add_del_ratio
+          COUNT(DISTINCT d.file_extension) AS file_type_diversity
       FROM git_commit_history c
       JOIN git_file_changes d ON c.commit = d.commit
       WHERE %s
-      GROUP BY c.commit, c.author_name, c.date
+      GROUP BY c.commit, c.author_name, c.date, c.message
     ", where_clause)
     
     df <- DBI::dbGetQuery(conn, query)
     if (nrow(df) == 0) {
       return(git_error("no_data_error", "Нет данных для подготовки признаков"))
     }
-    med <- median(df$add_del_ratio, na.rm = TRUE)
-    df$add_del_ratio[is.na(df$add_del_ratio)] <- med
     df
   }, error = function(e) {
     git_error("db_error", paste("Ошибка подготовки признаков:", e$message))
@@ -141,7 +138,8 @@ get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
     return(data.frame())
   }
   
-  X <- features_df[, c("hour", "dow", "n_files", "commit_size", "add_del_ratio")]
+  X <- features_df[, c("hour", "dow", "n_files", "commit_size", "message_length",
+                       "n_added_files", "n_deleted_files", "file_type_diversity")]
   X <- na.omit(X)
   if (nrow(X) < 10) return(data.frame())
   
@@ -163,7 +161,10 @@ get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
     dow <- as.numeric(row["dow"])
     n_files <- as.numeric(row["n_files"])
     commit_size <- as.numeric(row["commit_size"])
-    add_del_ratio <- as.numeric(row["add_del_ratio"])
+    msg_len <- as.numeric(row["message_length"])
+    added <- as.numeric(row["n_added_files"])
+    deleted <- as.numeric(row["n_deleted_files"])
+    diversity <- as.numeric(row["file_type_diversity"])
     
     if (hour < 6 || hour > 22) reasons <- c(reasons, "ночное время")
     if (dow %in% c(0, 6)) reasons <- c(reasons, "выходной день")
@@ -173,21 +174,11 @@ get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
       reasons <- c(reasons, paste0("очень маленький коммит (", commit_size, " строк)"))
     }
     if (n_files > 5) reasons <- c(reasons, paste0("много файлов (", n_files, ")"))
-    
-    if (add_del_ratio > 3) {
-      if (add_del_ratio > 100) {
-        reasons <- c(reasons, "почти все строки добавлены, удалений почти нет")
-      } else {
-        reasons <- c(reasons, paste0("добавлено в ", round(add_del_ratio, 1), " раз больше, чем удалено"))
-      }
-    } else if (add_del_ratio < 0.33 && add_del_ratio != 0) {
-      del_ratio <- round(1 / add_del_ratio, 1)
-      if (del_ratio > 100) {
-        reasons <- c(reasons, "почти все строки удалены, добавлений почти нет")
-      } else {
-        reasons <- c(reasons, paste0("удалено в ", del_ratio, " раз больше, чем добавлено"))
-      }
-    }
+    if (msg_len < 10) reasons <- c(reasons, "очень короткое сообщение")
+    if (msg_len > 500) reasons <- c(reasons, "очень длинное сообщение")
+    if (added > 10 && deleted == 0) reasons <- c(reasons, "только добавления, без удалений")
+    if (deleted > 10 && added == 0) reasons <- c(reasons, "только удаления, без добавлений")
+    if (diversity > 3) reasons <- c(reasons, paste0("много разных типов файлов (", diversity, ")"))
     
     if (length(reasons) == 0) {
       "необычное сочетание признаков"
@@ -210,7 +201,10 @@ get_ml_anomalies <- function(conn, author_name = NULL, score_threshold = 0.7,
     result$dow <- anomalies$dow
     result$n_files <- anomalies$n_files
     result$commit_size <- anomalies$commit_size
-    result$add_del_ratio <- anomalies$add_del_ratio
+    result$message_length <- anomalies$message_length
+    result$n_added_files <- anomalies$n_added_files
+    result$n_deleted_files <- anomalies$n_deleted_files
+    result$file_type_diversity <- anomalies$file_type_diversity
   }
   
   result <- result[order(-result$anomaly_score), ]

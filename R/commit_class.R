@@ -187,9 +187,9 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
   
   word_counts <- df %>%
     select(id, message) %>%
-    unnest_tokens(word, message) %>%
+    tidytext::unnest_tokens(word, message) %>%
     anti_join(stop_words, by = "word") %>%
-    count(id, word)
+    dplyr::count(id, word)
   
   doc_freq <- word_counts %>%
     group_by(word) %>% summarise(df = n(), .groups = "drop")
@@ -242,7 +242,7 @@ train_commit_classifier <- function(csv_path = NULL, max_features = 2000, num.tr
     words <- temp %>%
       unnest_tokens(word, message) %>%
       anti_join(stop_words, by = "word") %>%
-      count(id, word) %>%
+      dplyr::count(id, word) %>%
       filter(word %in% keep_words)
     if (nrow(words) == 0) {
       return(sparseMatrix(i = 1, j = 1, x = 0,
