@@ -5,5 +5,9 @@
 ^\.github$
 ^docker$
 ^data-raw$
+<<<<<<< HEAD
 ^git\.duckdb$
 ^git\.duckdb\.wal$
+=======
+^LICENSE\.md$
+>>>>>>> 4a7f7fac0db44e4da8c32c944d42b111245f8d55

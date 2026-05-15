@@ -1,6 +1,8 @@
 tech_dictionary <- list(
+  # Python веб-фреймворки
   "django" = "django", "flask" = "flask", "fastapi" = "fastapi",
   "tornado" = "tornado", "starlette" = "starlette", "litestar" = "litestar", "pyramid" = "pyramid",
+  # Python данные и ML
   "pandas" = "pandas", "numpy" = "numpy", "scipy" = "scipy",
   "scikit-learn" = "scikit-learn|sklearn", "pytorch" = "pytorch|torch",
   "tensorflow" = "tensorflow|tf", "keras" = "keras", "xgboost" = "xgboost",
@@ -10,51 +12,68 @@ tech_dictionary <- list(
   "plotly" = "plotly", "bokeh" = "bokeh", "statsmodels" = "statsmodels",
   "pyspark" = "pyspark", "dask" = "dask", "polars" = "polars", "ray" = "ray",
   "nltk" = "nltk", "spacy" = "spacy", "gensim" = "gensim",
+  # Python базы данных и ORM
   "sqlalchemy" = "sqlalchemy", "alembic" = "alembic", "psycopg2" = "psycopg2",
   "pymongo" = "pymongo", "redis" = "redis", "tortoise-orm" = "tortoise",
   "pydantic" = "pydantic", "motor" = "motor", "elasticsearch-py" = "elasticsearch",
+  # Python тестирование
   "pytest" = "pytest", "unittest" = "unittest", "hypothesis" = "hypothesis",
-  "factory-boy" = "factory", "mock" = "mock", "tox" = "tox",
+  "factory-boy" = "factory", "tox" = "tox",
+  # Python инфраструктура
   "celery" = "celery", "airflow" = "airflow", "prefect" = "prefect",
   "mlflow" = "mlflow", "uvicorn" = "uvicorn", "gunicorn" = "gunicorn",
   "httpx" = "httpx", "aiohttp" = "aiohttp", "requests" = "requests",
+  # JS/TS фронтенд
   "react" = "react|React|ReactDOM", "angular" = "angular|@angular",
   "vue" = "vue|Vue", "svelte" = "svelte", "solid" = "solid-js|solid",
   "nextjs" = "next|nextjs", "nuxt" = "nuxt", "remix" = "remix",
   "astro" = "astro", "qwik" = "qwik", "gatsby" = "gatsby",
+  # JS/TS бэкенд
   "nodejs" = "node|node.js", "express" = "express", "nestjs" = "@nestjs|nestjs",
   "fastify" = "fastify", "hono" = "hono", "koa" = "koa", "adonis" = "adonis",
+  # JS/TS тестирование
   "jest" = "jest", "vitest" = "vitest", "cypress" = "cypress",
   "playwright" = "playwright", "mocha" = "mocha", "chai" = "chai",
   "testing-library" = "@testing-library",
+  # JS/TS утилиты
   "prisma" = "prisma", "typeorm" = "typeorm", "sequelize" = "sequelize",
   "graphql" = "graphql", "apollo" = "apollo", "trpc" = "trpc|tRPC",
   "zod" = "zod", "webpack" = "webpack", "vite" = "vite", "eslint" = "eslint",
   "prettier" = "prettier", "turbopack" = "turbopack", "nx" = "nx",
+  # Java/Kotlin
   "spring" = "spring|springframework", "spring-boot" = "springboot",
   "spring-security" = "springsecurity", "spring-cloud" = "springcloud",
   "hibernate" = "hibernate", "jpa" = "jpa", "maven" = "maven",
   "gradle" = "gradle", "junit" = "junit", "mockito" = "mockito",
   "quarkus" = "quarkus", "micronaut" = "micronaut", "ktor" = "ktor",
   "exposed" = "exposed", "kotlin-coroutines" = "coroutines",
-  "gin" = "gin", "echo" = "echo", "fiber" = "fiber", "chi" = "chi",
-  "gorilla" = "gorilla", "gorm" = "gorm", "sqlx" = "sqlx",
-  "testify" = "testify", "cobra" = "cobra", "viper" = "viper",
-  "grpc-go" = "grpc", "fx" = "fx", "ent" = "ent",
+  # Go — точные паттерны
+  "gin" = "github.com/gin-gonic/gin", "echo" = "github.com/labstack/echo",
+  "fiber" = "github.com/gofiber/fiber", "chi" = "github.com/go-chi/chi",
+  "gorilla" = "github.com/gorilla", "gorm" = "github.com/go-gorm/gorm",
+  "sqlx" = "github.com/jmoiron/sqlx", "testify" = "github.com/stretchr/testify",
+  "cobra" = "github.com/spf13/cobra", "viper" = "github.com/spf13/viper",
+  "grpc-go" = "google.golang.org/grpc", "fx" = "go.uber.org/fx",
+  "ent" = "entgo.io/ent",
+  # Rust
   "tokio" = "tokio", "axum" = "axum", "actix-web" = "actix",
   "rocket" = "rocket", "serde" = "serde", "diesel" = "diesel",
   "sqlx-rust" = "sqlx", "reqwest" = "reqwest", "clap" = "clap",
   "tonic" = "tonic", "bevy" = "bevy",
+  # C# / .NET
   "aspnet" = "asp.net|aspnet", "entity-framework" = "entityframework",
   "blazor" = "blazor", "maui" = "maui", "signalr" = "signalr",
   "nunit" = "nunit", "xunit" = "xunit", "moq" = "moq",
   "automapper" = "automapper", "mediatr" = "mediatr",
+  # Ruby
   "rails" = "rails", "sinatra" = "sinatra", "rspec" = "rspec",
   "sidekiq" = "sidekiq", "devise" = "devise", "capistrano" = "capistrano",
   "faraday" = "faraday",
+  # PHP
   "laravel" = "laravel", "symfony" = "symfony", "wordpress" = "wordpress",
   "phpunit" = "phpunit", "composer" = "composer", "livewire" = "livewire",
   "filament" = "filament",
+  # R
   "ggplot2" = "ggplot2", "dplyr" = "dplyr", "tidyverse" = "tidyverse",
   "tidyr" = "tidyr", "readr" = "readr", "purrr" = "purrr",
   "lubridate" = "lubridate", "shiny" = "shiny", "rmarkdown" = "rmarkdown",
@@ -62,11 +81,18 @@ tech_dictionary <- list(
   "data.table" = "data.table", "DBI" = "DBI", "RSQLite" = "RSQLite",
   "httr" = "httr", "jsonlite" = "jsonlite", "testthat" = "testthat",
   "plumber" = "plumber", "targets" = "targets",
+  # Swift/Objective-C
   "swiftui" = "swiftui", "uikit" = "uikit", "combine" = "combine",
   "xctest" = "xctest", "cocoapods" = "cocoapods", "spm" = "swiftpackage",
   "alamofire" = "alamofire", "realm" = "realm",
+  # Dart/Flutter
   "flutter" = "flutter", "riverpod" = "riverpod", "bloc" = "bloc",
   "provider" = "provider", "dio" = "dio", "getx" = "getx",
+  # React Native, Expo, Jetpack Compose
+  "react_native" = "react-native|ReactNative",
+  "expo" = "expo",
+  "jetpack_compose" = "androidx\\.compose",
+  # Scala
   "akka" = "akka", "play" = "playframework", "cats" = "cats",
   "zio" = "zio", "spark" = "spark", "sbt" = "sbt"
 )
@@ -76,18 +102,18 @@ tech_group_map <- list(
   database = c("postgresql", "mysql", "sqlite", "mongodb", "redis", "mariadb", "elasticsearch", "oracle",
                "dynamodb", "firebase", "bigquery", "clickhouse", "cockroachdb", "cassandra", "neo4j", "influxdb"),
   frontend = c("react", "angular", "vue", "svelte", "solid", "nextjs", "nuxt", "remix", "astro", "gatsby",
-               "html_css"),
+               "javascript", "typescript", "html_css", "vue", "svelte"),
   backend  = c("nodejs", "express", "nestjs", "fastify", "django", "flask", "fastapi", "tornado", "starlette",
                "spring", "spring-boot", "gin", "echo", "fiber", "rails", "laravel", "aspnet", "actix-web",
-               "axum", "rocket", "tokio", "ktor", "go", "php", "ruby", "scala", "clojure", "elixir"),
+               "axum", "rocket", "tokio", "ktor", "python", "go", "ruby", "php", "java", "scala", "csharp", "kotlin", "rust"),
   devops   = c("docker", "kubernetes", "terraform", "ansible", "helm", "github-actions", "gitlab-ci", "jenkins",
                "circleci", "argocd", "pulumi"),
   data_ml  = c("pandas", "numpy", "scikit-learn", "pytorch", "tensorflow", "keras", "xgboost", "lightgbm",
                "catboost", "transformers", "spark", "dask", "polars", "ray", "nltk", "spacy", "gensim",
-               "mlflow", "airflow"),
+               "mlflow", "airflow", "python", "r"),
   testing  = c("pytest", "unittest", "jest", "vitest", "cypress", "playwright", "junit", "mockito", "rspec",
                "testthat", "phpunit"),
-  mobile   = c("flutter", "react_native", "expo", "jetpack-compose", "swiftui", "capacitor", "ionic", "kotlin", "swift", "dart"),
+  mobile   = c("flutter", "react_native", "expo", "jetpack_compose", "swiftui", "capacitor", "ionic", "kotlin", "swift", "dart"),
   embedded = c("cpp", "rust", "c", "zig", "nim", "v", "odin", "arduino", "freertos")
 )
 
@@ -113,6 +139,7 @@ get_tech_group <- function(tech) {
   }
   return("other")
 }
+
 #' @export
 get_tech_stack <- function(conn, author_name, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -239,6 +266,7 @@ get_tech_stack <- function(conn, author_name, repo_id = NULL) {
     row.names  = NULL
   )
 }
+
 #' @export
 get_tech_list <- function(conn, author_name, repo_id = NULL) {
   df <- get_tech_stack(conn, author_name, repo_id)
@@ -247,6 +275,7 @@ get_tech_list <- function(conn, author_name, repo_id = NULL) {
   }
   df$technology
 }
+
 #' @export
 get_commit_size_profile <- function(conn, author_name, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -283,6 +312,7 @@ get_commit_size_profile <- function(conn, author_name, since = NULL, until = NUL
     median_size = round(median(sizes), 1)
   )
 }
+
 #' @export
 get_user_repositories <- function(conn, author_name, since = NULL, until = NULL, repo_id = NULL) {
   if (missing(conn) || is.null(conn)) return(git_error("invalid_argument", "conn не может быть NULL"))
@@ -313,6 +343,7 @@ get_user_repositories <- function(conn, author_name, since = NULL, until = NULL,
     error = function(e) data.frame()
   )
 }
+
 #' @export
 get_developer_role <- function(conn, author_name, repo_id = NULL) {
   tech_df <- get_tech_stack(conn, author_name, repo_id = repo_id)
@@ -321,7 +352,33 @@ get_developer_role <- function(conn, author_name, repo_id = NULL) {
   if (length(groups) == 0) return("No technology detected")
   
   freq <- table(groups)
-  primary_group <- names(freq)[which.max(freq)]
+  
+  if (all(c("frontend", "backend") %in% names(freq)) && length(freq) >= 2) {
+    if (abs(freq["frontend"] - freq["backend"]) <= max(freq) / 2) {
+      return("Full‑stack Developer")
+    }
+  }
+  
+  max_freq <- max(freq)
+  top_groups <- names(freq)[freq == max_freq]
+  
+  if (length(top_groups) > 1) {
+    role_names <- c(
+      "backend"  = "Backend",
+      "frontend" = "Frontend",
+      "devops"   = "DevOps",
+      "data_ml"  = "Data/ML",
+      "database" = "Database",
+      "cloud"    = "Cloud",
+      "testing"  = "QA",
+      "mobile"   = "Mobile",
+      "embedded" = "Embedded/Systems",
+      "other"    = "Generalist"
+    )
+    top_groups <- sort(top_groups)
+    combined <- paste(role_names[top_groups], collapse = "/")
+    return(paste0(combined, " Developer"))
+  }
   
   role_map <- c(
     "backend"  = "Backend Developer",
@@ -335,13 +392,8 @@ get_developer_role <- function(conn, author_name, repo_id = NULL) {
     "embedded" = "Embedded/Systems Developer",
     "other"    = "Generalist"
   )
-  role <- role_map[primary_group]
+  role <- role_map[top_groups[1]]
   if (is.na(role)) role <- "Generalist"
-  
-  if (all(c("frontend", "backend") %in% names(freq)) && length(freq) >= 2) {
-    if (abs(freq["frontend"] - freq["backend"]) <= max(freq) / 2) {
-      role <- "Full‑stack Developer"
-    }
-  }
   return(role)
 }
+
