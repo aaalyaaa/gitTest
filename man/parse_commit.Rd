@@ -12,8 +12,7 @@ parse_commit(block, repo_id)
 \item{repo_id}{Numeric ID of the repository}
 }
 \value{
-Data frame with columns:
-commit, src_file, dst_file, start_del, count_del, start_add, count_add, added_code, deleted_code
+Data frame with columns: commit, src_file, dst_file, start_del, count_del, start_add, count_add, added_code, deleted_code
 }
 \description{
 Parse a single commit block into a data frame of changes

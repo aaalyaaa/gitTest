@@ -1,11 +1,16 @@
 Package: gitTest
-Title: What the Package Does (One Line, Title Case)
-Version: 0.0.0.9000
-Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+Title: Git Repository Analysis for Developer Profiling and Anomaly Detection
+Version: 0.1.0
+Authors@R: c(
+    person("Alina", "Gribanova", email = "gribanovaalya@mail.ru", role = c("aut", "cre")),
+    person("Anna", "Erofeeva", role = "aut"),
+    person("Tatyana", "Maksimova", role = "aut")
+  )
+Description: Provides tools for extracting and analyzing Git repository data,
+    building behavioral developer profiles, detecting anomalies in commit patterns,
+    and generating team metrics. Designed for HR and team leads to
+    objectively evaluate developer contributions and optimize team composition.
+License: MIT + file LICENSE
 Imports:
     DBI,
     dplyr,

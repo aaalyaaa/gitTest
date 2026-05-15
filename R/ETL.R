@@ -543,6 +543,7 @@ save_repo_metadata <- function(con, repo_id, owner, repo, token = NULL) {
 #'
 #' @param repo_name Name of the repository to delete
 #' @return Invisibly returns TRUE if deleted, FALSE if not found
+#' @export
 delete_repository <- function(repo_name) {
   con <- DBI::dbConnect(duckdb::duckdb(), "git.duckdb")
   on.exit(DBI::dbDisconnect(con, shutdown = TRUE))
@@ -699,6 +700,11 @@ run_etl_pipeline <- function(mode, repo_url = NULL, local_path = NULL,
   })
 }
 
+#' Reset the DuckDB database by deleting the database file and its WAL
+#'
+#' @param db_path Path to the DuckDB database file (default: "git.duckdb")
+#' @return Invisibly returns TRUE
+#' @export
 reset_db <- function(db_path = "git.duckdb") {
   duckdb::duckdb_shutdown(duckdb::duckdb(db_path))
 
@@ -716,4 +722,156 @@ reset_db <- function(db_path = "git.duckdb") {
 
   message("Database reset. Next call to init_db() will create a fresh database.")
   invisible(TRUE)
+}
+
+#' Connect to the DuckDB database
+#'
+#' Creates a connection to the DuckDB database. This is a convenience wrapper
+#' around `DBI::dbConnect(duckdb::duckdb(), ...)`.
+#'
+#' @param db_path Path to the DuckDB database file (default: "git.duckdb")
+#' @param read_only Whether to open the database in read-only mode (default: FALSE)
+#' @return A DBI connection object
+#' @export
+connect_db <- function(db_path = "git.duckdb", read_only = FALSE) {
+  DBI::dbConnect(duckdb::duckdb(), dbdir = db_path, read_only = read_only)
+}
+
+#' Show all tables in the database with row counts
+#'
+#' Lists all tables in the DuckDB database along with the number of rows
+#' in each table.
+#'
+#' @param con Database connection object (if NULL, a temporary connection is created)
+#' @param db_path Path to the database (used only if con is NULL)
+#' @return A data frame with table names and row counts
+#' @export
+list_tables <- function(con = NULL, db_path = "git.duckdb") {
+  local_con <- FALSE
+  if (is.null(con)) {
+    con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db_path, read_only = TRUE)
+    local_con <- TRUE
+  }
+
+  tables <- DBI::dbListTables(con)
+  result <- data.frame(
+    table_name = character(),
+    row_count = integer(),
+    stringsAsFactors = FALSE
+  )
+
+  for (tbl in tables) {
+    count <- DBI::dbGetQuery(con, sprintf("SELECT COUNT(*) AS n FROM %s", tbl))$n
+    result <- rbind(result, data.frame(table_name = tbl, row_count = count))
+  }
+
+  if (local_con) {
+    DBI::dbDisconnect(con, shutdown = TRUE)
+  }
+
+  return(result)
+}
+
+#' View data from a specific table
+#'
+#' Retrieves data from a table, with optional row limit and column selection.
+#'
+#' @param con Database connection object (if NULL, a temporary connection is created)
+#' @param table_name Name of the table to view
+#' @param limit Maximum number of rows to return (default: 100, use NULL for all)
+#' @param columns Character vector of column names to select (default: all columns)
+#' @param db_path Path to the database (used only if con is NULL)
+#' @return A data frame with the requested data
+#' @export
+view_table <- function(con = NULL, table_name, limit = 100, columns = NULL, db_path = "git.duckdb") {
+  local_con <- FALSE
+  if (is.null(con)) {
+    con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db_path, read_only = TRUE)
+    local_con <- TRUE
+  }
+
+  if (!table_name %in% DBI::dbListTables(con)) {
+    stop("Table '", table_name, "' does not exist in the database")
+  }
+
+  if (is.null(columns)) {
+    select_clause <- "*"
+  } else {
+    select_clause <- paste(columns, collapse = ", ")
+  }
+
+  if (is.null(limit)) {
+    sql <- sprintf("SELECT %s FROM %s", select_clause, table_name)
+  } else {
+    sql <- sprintf("SELECT %s FROM %s LIMIT %d", select_clause, table_name, limit)
+  }
+
+  result <- DBI::dbGetQuery(con, sql)
+
+  if (local_con) {
+    DBI::dbDisconnect(con, shutdown = TRUE)
+  }
+
+  return(result)
+}
+
+#' Get column information for a table
+#'
+#' Returns the schema of a table: column names, data types, and nullability.
+#'
+#' @param con Database connection object (if NULL, a temporary connection is created)
+#' @param table_name Name of the table
+#' @param db_path Path to the database (used only if con is NULL)
+#' @return A data frame with column information
+#' @export
+table_info <- function(con = NULL, table_name, db_path = "git.duckdb") {
+  local_con <- FALSE
+  if (is.null(con)) {
+    con <- DBI::dbConnect(duckdb::duckdb(), dbdir = db_path, read_only = TRUE)
+    local_con <- TRUE
+  }
+
+  if (!table_name %in% DBI::dbListTables(con)) {
+    stop("Table '", table_name, "' does not exist in the database")
+  }
+
+  result <- DBI::dbGetQuery(con, sprintf("PRAGMA table_info(%s)", table_name))
+
+  if (local_con) {
+    DBI::dbDisconnect(con, shutdown = TRUE)
+  }
+
+  return(result)
+}
+
+#' Get a quick summary of the database
+#'
+#' @param con Database connection (if NULL, a temporary connection is created)
+#' @param db_path Path to the database (used only if con is NULL)
+#' @return List with summary information
+#' @export
+db_summary <- function(con = NULL, db_path = "git.duckdb") {
+  local_con <- FALSE
+  if (is.null(con)) {
+    con <- connect_db(db_path, read_only = TRUE)
+    local_con <- TRUE
+  }
+
+  summary <- list(
+    total_commits = DBI::dbGetQuery(con, "SELECT COUNT(*) FROM git_commit_history")[1,1],
+    total_changes = DBI::dbGetQuery(con, "SELECT COUNT(*) FROM git_file_changes")[1,1],
+    total_repos = DBI::dbGetQuery(con, "SELECT COUNT(*) FROM repo_path")[1,1],
+    unique_authors = DBI::dbGetQuery(con, "SELECT COUNT(DISTINCT author_name) FROM git_commit_history")[1,1],
+    date_range = DBI::dbGetQuery(con, "
+      SELECT MIN(date) as first_commit, MAX(date) as last_commit
+      FROM git_commit_history
+    "),
+    tables = DBI::dbListTables(con)
+  )
+
+  if (local_con) {
+    DBI::dbDisconnect(con, shutdown = TRUE)
+  }
+
+  return(summary)
 }
