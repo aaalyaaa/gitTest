@@ -5,3 +5,5 @@
 ^\.github$
 ^docker$
 ^data-raw$
+^git\.duckdb$
+^git\.duckdb\.wal$
