@@ -1,6 +1,3 @@
-# profile_analytics.R
-# Исправленная версия: точные паттерны, языки в tech_group_map, комбинированные роли
-
 tech_dictionary <- list(
   # Python веб-фреймворки
   "django" = "django", "flask" = "flask", "fastapi" = "fastapi",
