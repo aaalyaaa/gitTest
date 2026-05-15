@@ -2,12 +2,9 @@
 
 export(cache_anomalies)
 export(classify_commits_in_db)
-<<<<<<< HEAD
-=======
 export(connect_db)
 export(db_summary)
 export(delete_repository)
->>>>>>> 4a7f7fac0db44e4da8c32c944d42b111245f8d55
 export(ensure_metrics_exist)
 export(example_db)
 export(get_activity_seasonality)
@@ -24,20 +21,13 @@ export(get_summary_stats)
 export(get_tech_list)
 export(get_tech_stack)
 export(get_user_repositories)
-<<<<<<< HEAD
-export(load_commit_model)
-export(refresh_developer_metrics)
-export(run_app)
-export(run_etl_pipeline)
-export(summary_ml_anomalies)
-=======
 export(list_tables)
 export(load_commit_model)
 export(refresh_developer_metrics)
 export(reset_db)
+export(run_app)
 export(run_etl_pipeline)
 export(summary_ml_anomalies)
 export(table_info)
 export(view_table)
->>>>>>> 4a7f7fac0db44e4da8c32c944d42b111245f8d55
 importFrom(magrittr,"%>%")
