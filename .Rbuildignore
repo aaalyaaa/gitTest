@@ -5,3 +5,4 @@
 ^\.github$
 ^docker$
 ^data-raw$
+^LICENSE\.md$
